@@ -15,7 +15,11 @@ app.use(cors());
 app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key_very_secure_random_string';
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7639223015:AAGdo2oB_uL4pEqXTnnepR4IpwsTSh2_UyY';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+if (!TELEGRAM_BOT_TOKEN) {
+  console.error('ОШИБКА: TELEGRAM_BOT_TOKEN не установлен в переменных окружения!');
+  process.exit(1);
+}
 const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY || 'GIMZKRMOGP4F0MOTLVCE';
 const S3_SECRET_KEY = process.env.S3_SECRET_KEY || 'WvhFfIzzCkITUrXfD8JfoDne7LmBhnNzDuDBj89I';
 const MYSQL_HOST = process.env.MYSQL_HOST || 'vh438.timeweb.ru';
