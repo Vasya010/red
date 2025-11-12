@@ -1774,31 +1774,80 @@ app.put('/api/public/auth/profile', optionalAuthenticateToken, (req, res) => {
 // API для получения профиля пользователя
 app.get('/api/public/auth/profile', authenticateToken, (req, res) => {
   const userId = req.user?.id;
+  const userPhone = req.user?.phone;
   
   if (!userId) {
     return res.status(401).json({ error: 'Необходима авторизация' });
   }
   
+  // Сначала ищем по ID
   db.query('SELECT * FROM app_users WHERE id = ?', [userId], (err, users) => {
     if (err) {
       console.error('Ошибка получения профиля:', err);
       return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
     }
-    if (users.length === 0) {
-      return res.status(404).json({ error: 'Пользователь не найден' });
+    
+    // Если пользователь найден по ID
+    if (users.length > 0) {
+      const user = users[0];
+      return res.json({ 
+        user: { 
+          id: user.id, 
+          phone: user.phone, 
+          name: user.name, 
+          address: user.address,
+          first_name: user.name ? user.name.split(' ')[0] : null,
+          last_name: user.name ? user.name.split(' ').slice(1).join(' ') : null
+        } 
+      });
     }
     
-    const user = users[0];
-    res.json({ 
-      user: { 
-        id: user.id, 
-        phone: user.phone, 
-        name: user.name, 
-        address: user.address,
-        first_name: user.name ? user.name.split(' ')[0] : null,
-        last_name: user.name ? user.name.split(' ').slice(1).join(' ') : null
-      } 
-    });
+    // Если пользователь не найден по ID, но есть телефон, ищем по телефону
+    if (userPhone) {
+      db.query('SELECT * FROM app_users WHERE phone = ?', [userPhone], (err, usersByPhone) => {
+        if (err) {
+          console.error('Ошибка поиска пользователя по телефону:', err);
+        }
+        
+        if (usersByPhone && usersByPhone.length > 0) {
+          const user = usersByPhone[0];
+          return res.json({ 
+            user: { 
+              id: user.id, 
+              phone: user.phone, 
+              name: user.name, 
+              address: user.address,
+              first_name: user.name ? user.name.split(' ')[0] : null,
+              last_name: user.name ? user.name.split(' ').slice(1).join(' ') : null
+            } 
+          });
+        }
+        
+        // Если не найден ни по ID, ни по телефону, возвращаем пустой профиль
+        return res.json({ 
+          user: { 
+            id: userId, 
+            phone: userPhone, 
+            name: null, 
+            address: null,
+            first_name: null,
+            last_name: null
+          } 
+        });
+      });
+    } else {
+      // Если нет телефона в токене, возвращаем пустой профиль
+      return res.json({ 
+        user: { 
+          id: userId, 
+          phone: null, 
+          name: null, 
+          address: null,
+          first_name: null,
+          last_name: null
+        } 
+      });
+    }
   });
 });
 
@@ -2153,6 +2202,12 @@ app.get('/', (req, res) => res.send('Booday Pizza API'));
 app.post('/admin/login', (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Введите email и пароль' });
+  
+  // Проверяем, что это админ с правильным email
+  if (email !== 'admin@ameranpizza.com') {
+    return res.status(403).json({ error: 'Доступ запрещен. Только администратор может войти в админ-панель.' });
+  }
+  
   db.query('SELECT * FROM users WHERE email = ?', [email], (err, users) => {
     if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
     if (users.length === 0) return res.status(401).json({ error: 'Неверный email или пароль' });
