@@ -3494,27 +3494,35 @@ app.post('/api/public/order-card', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Все поля обязательны' });
   }
 
-  // Проверяем, есть ли уже активная заявка
-  db.query(
-    'SELECT * FROM card_requests WHERE user_id = ? AND status = "pending"',
-    [userId],
-    (err, existing) => {
+  // Проверяем, существует ли пользователь в app_users
+  const checkUserAndCreateRequest = (finalUserId) => {
+    // Проверяем, есть ли уже активная заявка по телефону или user_id
+    const checkQuery = finalUserId 
+      ? 'SELECT * FROM card_requests WHERE (user_id = ? OR phone = ?) AND status = "pending"'
+      : 'SELECT * FROM card_requests WHERE phone = ? AND status = "pending"';
+    const checkParams = finalUserId ? [finalUserId, phone] : [phone];
+    
+    db.query(checkQuery, checkParams, (err, existing) => {
       if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
       if (existing.length > 0) {
         return res.status(400).json({ error: 'У вас уже есть активная заявка на карту' });
       }
 
-      // Создаем заявку
+      // Создаем заявку (user_id может быть NULL)
       db.query(
         'INSERT INTO card_requests (user_id, first_name, last_name, phone, status) VALUES (?, ?, ?, ?, "pending")',
-        [userId, first_name, last_name, phone],
+        [finalUserId || null, first_name, last_name, phone],
         (err, result) => {
-          if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+          if (err) {
+            console.error('Ошибка создания заявки на карту:', err);
+            return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+          }
           
           // Создаем уведомление для админа
           db.query(
-            'INSERT INTO notifications (user_id, title, message, type) VALUES (NULL, ?, ?, "card_request")',
+            'INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, "card_request")',
             [
+              finalUserId || null,
               'Новая заявка на карту',
               `Пользователь ${first_name} ${last_name} (${phone}) подал заявку на карту`
             ],
@@ -3528,8 +3536,21 @@ app.post('/api/public/order-card', authenticateToken, (req, res) => {
           });
         }
       );
-    }
-  );
+    });
+  };
+
+  if (userId) {
+    // Проверяем, существует ли пользователь в app_users
+    db.query('SELECT id FROM app_users WHERE id = ?', [userId], (err, users) => {
+      if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+      // Если пользователь не найден, используем NULL
+      const finalUserId = users.length > 0 ? userId : null;
+      checkUserAndCreateRequest(finalUserId);
+    });
+  } else {
+    // Если user_id нет в токене, создаем заявку без user_id
+    checkUserAndCreateRequest(null);
+  }
 });
 
 // Админ: Получить все заявки на карты
