@@ -3820,6 +3820,12 @@ app.delete('/couriers/:id', authenticateToken, (req, res) => {
 
 // Админ: Получить все заказы
 app.get('/orders', authenticateToken, (req, res) => {
+  const userId = req.user?.id;
+  
+  if (!userId) {
+    return res.status(401).json({ error: 'Необходима авторизация' });
+  }
+  
   db.query(`
     SELECT o.*, 
            b.name as branch_name,
@@ -3828,8 +3834,9 @@ app.get('/orders', authenticateToken, (req, res) => {
     FROM orders o
     LEFT JOIN branches b ON o.branch_id = b.id
     LEFT JOIN app_users au ON o.user_id = au.id
+    WHERE o.user_id = ?
     ORDER BY o.created_at DESC
-  `, (err, orders) => {
+  `, [userId], (err, orders) => {
     if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
     res.json(orders);
   });
