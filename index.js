@@ -1874,7 +1874,7 @@ app.get('/api/public/cashback/balance', optionalAuthenticateToken, (req, res) =>
     const phone = users[0].phone;
     
     db.query(
-      'SELECT balance, total_earned, total_spent, user_level, total_orders FROM cashback_balance WHERE phone = ?',
+      'SELECT balance, total_earned, total_spent, user_level, total_orders, expires_at, created_at FROM cashback_balance WHERE phone = ?',
       [phone],
       (err, result) => {
         if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
@@ -1885,6 +1885,8 @@ app.get('/api/public/cashback/balance', optionalAuthenticateToken, (req, res) =>
             total_spent: 0,
             user_level: 'bronze',
             total_orders: 0,
+            expires_at: null,
+            created_at: null,
             isAuthenticated: true
           });
         }
