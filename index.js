@@ -3656,33 +3656,44 @@ app.put('/card-requests/:id/approve', authenticateToken, (req, res) => {
       (err) => {
         if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
         
-        // Создаем карту (добавляем запись в cashback_balance с начальным балансом 0)
-        db.query(
-          'INSERT INTO cashback_balance (phone, balance, total_earned, total_orders, user_level) VALUES (?, 0, 0, 0, "bronze") ON DUPLICATE KEY UPDATE phone = phone',
-          [request.phone],
-          (err) => {
-            if (err) console.error('Ошибка создания карты:', err);
-            
-            // Создаем уведомление для пользователя
-            if (request.user_id) {
-              db.query(
-                'INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, "card_approved")',
-                [
-                  request.user_id,
-                  'Карта одобрена!',
-                  'Ваша заявка на карту была одобрена. Теперь вы можете получать кешбек с каждого заказа!'
-                ],
-                () => {}
-              );
+        // Создаем карту (добавляем запись в cashback_balance с начальным балансом 0 и сроком действия 1 месяц)
+        const expiresAt = new Date();
+        expiresAt.setMonth(expiresAt.getMonth() + 1); // Срок действия 1 месяц
+        
+        // Сначала добавляем поле expires_at если его нет
+        db.query('ALTER TABLE cashback_balance ADD COLUMN IF NOT EXISTS expires_at DATETIME', (alterErr) => {
+          // Игнорируем ошибку если поле уже существует
+          
+          db.query(
+            `INSERT INTO cashback_balance (phone, balance, total_earned, total_orders, user_level, expires_at) 
+             VALUES (?, 0, 0, 0, "bronze", ?) 
+             ON DUPLICATE KEY UPDATE expires_at = ?`,
+            [request.phone, expiresAt, expiresAt],
+            (err) => {
+              if (err) console.error('Ошибка создания карты:', err);
+              
+              // Создаем уведомление для пользователя
+              if (request.user_id) {
+                db.query(
+                  'INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, "card_approved")',
+                  [
+                    request.user_id,
+                    'Карта одобрена!',
+                    'Ваша заявка на карту Boodai Coin была одобрена. Карта действительна 1 месяц. Теперь вы можете получать кешбек с каждого заказа!'
+                  ],
+                  () => {}
+                );
+              }
+              
+              res.json({ 
+                success: true, 
+                message: 'Заявка одобрена, карта создана',
+                request: { ...request, status: 'approved' },
+                expires_at: expiresAt
+              });
             }
-            
-            res.json({ 
-              success: true, 
-              message: 'Заявка одобрена, карта создана',
-              request: { ...request, status: 'approved' }
-            });
-          }
-        );
+          );
+        });
       }
     );
   });
