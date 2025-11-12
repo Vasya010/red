@@ -1772,17 +1772,33 @@ app.put('/api/public/auth/profile', optionalAuthenticateToken, (req, res) => {
 });
 
 // API для получения профиля пользователя
-app.get('/api/public/auth/profile', optionalAuthenticateToken, (req, res) => {
+app.get('/api/public/auth/profile', authenticateToken, (req, res) => {
   const userId = req.user?.id;
   
-  if (!userId) return res.status(401).json({ error: 'Необходима авторизация' });
+  if (!userId) {
+    return res.status(401).json({ error: 'Необходима авторизация' });
+  }
   
   db.query('SELECT * FROM app_users WHERE id = ?', [userId], (err, users) => {
-    if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
-    if (users.length === 0) return res.status(404).json({ error: 'Пользователь не найден' });
+    if (err) {
+      console.error('Ошибка получения профиля:', err);
+      return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+    }
+    if (users.length === 0) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
     
     const user = users[0];
-    res.json({ user: { id: user.id, phone: user.phone, name: user.name, address: user.address } });
+    res.json({ 
+      user: { 
+        id: user.id, 
+        phone: user.phone, 
+        name: user.name, 
+        address: user.address,
+        first_name: user.name ? user.name.split(' ')[0] : null,
+        last_name: user.name ? user.name.split(' ').slice(1).join(' ') : null
+      } 
+    });
   });
 });
 
