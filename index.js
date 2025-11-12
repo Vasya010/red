@@ -1851,6 +1851,42 @@ app.get('/api/public/auth/profile', authenticateToken, (req, res) => {
   });
 });
 
+// API для работы с кешбэком по телефону (должен быть ПЕРЕД общим маршрутом)
+app.get('/api/public/cashback/balance/:phone', (req, res) => {
+  const { phone } = req.params;
+  if (!phone) return res.status(400).json({ error: 'Телефон обязателен' });
+  
+  // Очищаем телефон от лишних символов
+  const cleanPhone = phone.replace(/\D/g, '');
+  if (cleanPhone.length < 10) {
+    return res.status(400).json({ error: 'Некорректный номер телефона' });
+  }
+  
+  db.query(
+    'SELECT balance, total_earned, total_spent, user_level, total_orders, expires_at, created_at FROM cashback_balance WHERE phone = ?',
+    [cleanPhone],
+    (err, result) => {
+      if (err) {
+        console.error('Ошибка получения баланса:', err);
+        return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+      }
+      if (result.length === 0) {
+        return res.json({
+          balance: 0,
+          total_earned: 0,
+          total_spent: 0,
+          user_level: 'bronze',
+          total_orders: 0,
+          expires_at: null,
+          created_at: null,
+          isAuthenticated: false
+        });
+      }
+      res.json({ ...result[0], isAuthenticated: true });
+    }
+  );
+});
+
 // API для получения кешбэка по токену (для авторизованных пользователей)
 app.get('/api/public/cashback/balance', optionalAuthenticateToken, (req, res) => {
   const userId = req.user?.id;
@@ -1920,30 +1956,6 @@ app.get('/api/public/cashback/transactions', optionalAuthenticateToken, (req, re
       }
     );
   });
-});
-
-// API для работы с кешбэком
-app.get('/api/public/cashback/balance/:phone', (req, res) => {
-  const { phone } = req.params;
-  if (!phone) return res.status(400).json({ error: 'Телефон обязателен' });
-  
-  db.query(
-    'SELECT balance, total_earned, total_spent, user_level, total_orders FROM cashback_balance WHERE phone = ?',
-    [phone],
-    (err, result) => {
-      if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
-      if (result.length === 0) {
-        return res.json({
-          balance: 0,
-          total_earned: 0,
-          total_spent: 0,
-          user_level: 'bronze',
-          total_orders: 0
-        });
-      }
-      res.json(result[0]);
-    }
-  );
 });
 
 // API для получения уведомлений
