@@ -7,7 +7,10 @@ const multer = require('multer');
 const path = require('path');
 const { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { Upload } = require('@aws-sdk/lib-storage');
+const { NodeHttpHandler } = require('@smithy/node-http-handler');
+const { Agent } = require('https');
 const axios = require('axios');
+const crypto = require('crypto');
 require('dotenv').config();
 
 const app = express();
@@ -31,6 +34,19 @@ const SMS_GATEWAY_URL = process.env.SMS_GATEWAY_URL || 'https://vasya010-red-bdf
 const SMS_GATEWAY_API_KEY = process.env.SMS_GATEWAY_API_KEY || '';
 const SMS_GATEWAY_METHOD = process.env.SMS_GATEWAY_METHOD || 'POST'; 
 
+
+// Увеличиваем лимит сокетов для AWS SDK
+const httpsAgent = new Agent({
+  maxSockets: 200,
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+});
+
+const nodeHttpHandler = new NodeHttpHandler({
+  httpsAgent: httpsAgent,
+  socketAcquisitionWarningTimeout: 10000,
+});
+
 const s3Client = new S3Client({
   credentials: {
     accessKeyId: S3_ACCESS_KEY,
@@ -39,8 +55,34 @@ const s3Client = new S3Client({
   endpoint: 'https://s3.twcstorage.ru',
   region: 'ru-1',
   forcePathStyle: true,
+  requestHandler: nodeHttpHandler,
 });
 const S3_BUCKET = 'a2c31109-3cf2c97b-aca1-42b0-a822-3e0ade279447';
+
+// Кэш для изображений в памяти
+const imageCache = new Map();
+const CACHE_MAX_SIZE = 500; // Максимальное количество изображений в кэше
+const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 часа в миллисекундах
+
+// Функция для очистки старых записей из кэша
+function cleanImageCache() {
+  const now = Date.now();
+  for (const [key, value] of imageCache.entries()) {
+    if (now - value.timestamp > CACHE_TTL) {
+      imageCache.delete(key);
+    }
+  }
+  // Если кэш все еще слишком большой, удаляем самые старые записи
+  if (imageCache.size > CACHE_MAX_SIZE) {
+    const entries = Array.from(imageCache.entries())
+      .sort((a, b) => a[1].timestamp - b[1].timestamp);
+    const toDelete = entries.slice(0, imageCache.size - CACHE_MAX_SIZE);
+    toDelete.forEach(([key]) => imageCache.delete(key));
+  }
+}
+
+// Очистка кэша каждые 30 минут
+setInterval(cleanImageCache, 30 * 60 * 1000);
 
 function testS3Connection(callback) {
   const command = new PutObjectCommand({
@@ -69,13 +111,62 @@ function uploadToS3(file, callback) {
 }
 
 function getFromS3(key, callback) {
+  // Проверяем кэш
+  const cached = imageCache.get(key);
+  if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
+    // Возвращаем кэшированное изображение (создаем новый буфер для каждого запроса)
+    const responseData = {
+      ...cached.data,
+      Body: Buffer.from(cached.data.Body), // Создаем копию буфера
+    };
+    return callback(null, responseData);
+  }
+
+  // Если нет в кэше, загружаем из S3
   const params = { Bucket: S3_BUCKET, Key: key };
-  s3Client.send(new GetObjectCommand(params), callback);
+  s3Client.send(new GetObjectCommand(params), (err, data) => {
+    if (err) return callback(err);
+    
+    // Сохраняем в кэш
+    // Читаем весь поток в буфер для кэширования
+    const chunks = [];
+    data.Body.on('data', (chunk) => chunks.push(chunk));
+    data.Body.on('end', () => {
+      const buffer = Buffer.concat(chunks);
+      // Вычисляем ETag для кэширования
+      const etag = crypto.createHash('md5').update(buffer).digest('hex');
+      const cachedData = {
+        ContentType: data.ContentType,
+        LastModified: data.LastModified,
+        ETag: etag,
+        ContentLength: data.ContentLength,
+        Body: buffer,
+      };
+      imageCache.set(key, {
+        data: cachedData,
+        timestamp: Date.now(),
+      });
+      
+      // Создаем новый объект с буфером для callback
+      const responseData = {
+        ...cachedData,
+        Body: Buffer.from(buffer), // Создаем копию буфера для каждого запроса
+      };
+      callback(null, responseData);
+    });
+    data.Body.on('error', callback);
+  });
 }
 
 function deleteFromS3(key, callback) {
   const params = { Bucket: S3_BUCKET, Key: key };
-  s3Client.send(new DeleteObjectCommand(params), callback);
+  s3Client.send(new DeleteObjectCommand(params), (err, data) => {
+    // Очищаем кэш при удалении
+    if (!err) {
+      imageCache.delete(key);
+    }
+    callback(err, data);
+  });
 }
 
 const db = mysql.createPool({
@@ -124,10 +215,33 @@ function optionalAuthenticateToken(req, res, next) {
 
 app.get('/product-image/:key', optionalAuthenticateToken, (req, res) => {
   const { key } = req.params;
-  getFromS3(`pizza-images/${key}`, (err, image) => {
+  const cacheKey = `pizza-images/${key}`;
+  
+  getFromS3(cacheKey, (err, image) => {
     if (err) return res.status(500).json({ error: `Ошибка получения изображения: ${err.message}` });
-    res.setHeader('Content-Type', image.ContentType || 'image/jpeg');
-    image.Body.pipe(res);
+    
+    const contentType = image.ContentType || 'image/jpeg';
+    const etag = image.ETag || crypto.createHash('md5').update(image.Body).digest('hex');
+    
+    // Проверяем If-None-Match для 304 Not Modified
+    if (req.headers['if-none-match'] === `"${etag}"` || req.headers['if-none-match'] === etag) {
+      return res.status(304).end();
+    }
+    
+    // Устанавливаем заголовки кэширования
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400'); // Кэш на 24 часа
+    res.setHeader('ETag', `"${etag}"`);
+    if (image.LastModified) {
+      res.setHeader('Last-Modified', new Date(image.LastModified).toUTCString());
+    }
+    
+    // Отправляем изображение
+    if (Buffer.isBuffer(image.Body)) {
+      res.send(image.Body);
+    } else {
+      image.Body.pipe(res);
+    }
   });
 });
 
