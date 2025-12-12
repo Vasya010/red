@@ -308,11 +308,9 @@ function initializeServer(callback) {
                 }
                 if (branches.length === 0) {
                   const insertBranches = [
+                   
                     ['Араванская', '-1003355571066'],
-                    ['BOODAI PIZZA', '-1002311447135'],
-                    ['Район', '-1002638475628'],
-                    ['Араванский', '-1002311447135'],
-                    ['Ошский район', '-1002638475628'],
+                   
                   ];
                   let inserted = 0;
                   insertBranches.forEach(([name, telegram_chat_id]) => {
