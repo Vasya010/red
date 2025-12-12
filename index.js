@@ -331,9 +331,8 @@ function initializeServer(callback) {
                   });
                 } else {
                   const updateQueries = [
-                    ['american_pizza.osh', '-1003140309410'],
-                    ['Араванский', '-1002311447135'],
-                    ['Ошский район', '-1002638475628'],
+                    ['Араванская', '-1003355571066'],
+                   
                   ];
                   let updated = 0;
                   updateQueries.forEach(([name, telegram_chat_id]) => {
@@ -1584,24 +1583,37 @@ ${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${cashbackEarned.toF
         
         // Обрабатываем кешбэк, затем отправляем в Telegram
         processCashback(() => {
+          // Преобразуем chat_id в строку для надежности
+          const chatIdString = String(chatId);
+          console.log(`Отправка сообщения в Telegram. Chat ID: ${chatIdString}, Филиал: ${branchName}`);
+          
           axios.post(
             `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
             {
-              chat_id: chatId,
+              chat_id: chatIdString,
               text: orderText,
               parse_mode: 'Markdown',
             }
           ).then(response => {
+            console.log(`Сообщение успешно отправлено в Telegram. Chat ID: ${chatIdString}`);
             res.status(200).json({ 
               message: 'Заказ успешно отправлен', 
               orderId: orderId,
               cashbackEarned: cashbackEarned
             });
           }).catch(telegramError => {
+            const errorCode = telegramError.response?.data?.error_code;
             const errorDescription = telegramError.response?.data?.description || telegramError.message;
-            if (telegramError.response?.data?.error_code === 403) {
+            console.error(`Ошибка отправки в Telegram. Chat ID: ${chatIdString}, Код ошибки: ${errorCode}, Описание: ${errorDescription}`);
+            
+            if (errorCode === 403) {
               return res.status(500).json({
-                error: `Бот не имеет прав для отправки сообщений в группу (chat_id: ${chatId}). Убедитесь, что бот добавлен в группу и имеет права администратора.`,
+                error: `Бот не имеет прав для отправки сообщений в группу (chat_id: ${chatIdString}). Убедитесь, что бот добавлен в группу и имеет права администратора.`,
+              });
+            }
+            if (errorCode === 400 && errorDescription && errorDescription.includes('chat not found')) {
+              return res.status(500).json({
+                error: `Чат не найден (chat_id: ${chatIdString}). Убедитесь, что бот добавлен в группу/канал с этим ID. Для получения chat_id добавьте бота @userinfobot в группу или используйте @getidsbot.`,
               });
             }
             return res.status(500).json({ error: `Ошибка отправки в Telegram: ${errorDescription}` });
@@ -4030,13 +4042,17 @@ app.put('/orders/:id', authenticateToken, (req, res) => {
         if (order.branch_id && TELEGRAM_BOT_TOKEN) {
           db.query('SELECT telegram_chat_id FROM branches WHERE id = ?', [order.branch_id], (err, branches) => {
             if (!err && branches.length > 0 && branches[0].telegram_chat_id) {
-              const chatId = branches[0].telegram_chat_id;
+              const chatId = String(branches[0].telegram_chat_id);
               const message = `📦 Статус заказа #${id} изменен на: ${status}`;
               axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
                 chat_id: chatId,
                 text: message,
                 parse_mode: 'HTML'
-              }).catch(err => console.error('Ошибка отправки в Telegram:', err));
+              }).catch(err => {
+                const errorCode = err.response?.data?.error_code;
+                const errorDescription = err.response?.data?.description || err.message;
+                console.error(`Ошибка отправки статуса в Telegram. Chat ID: ${chatId}, Код: ${errorCode}, Описание: ${errorDescription}`);
+              });
             }
           });
         }
