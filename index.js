@@ -319,12 +319,12 @@ function initializeServer(callback) {
                       // После создания филиала устанавливаем chat_id
                       connection.query(
                         'UPDATE branches SET telegram_chat_id = ? WHERE name = ?',
-                        ['-1003355571066', 'Араванская'],
+                        ['-1003367256314', 'Араванская'],
                         (err) => {
                           if (err) {
                             console.error('Ошибка установки chat_id для Араванская:', err);
                           } else {
-                            console.log('Chat ID для филиала "Араванская" установлен: -1003355571066');
+                            console.log('Chat ID для филиала "Араванская" установлен: -1003367256314');
                           }
                           continueInitialization();
                         }
@@ -335,12 +335,12 @@ function initializeServer(callback) {
                   // Устанавливаем chat_id для филиала "Араванская" (всегда обновляем)
                   connection.query(
                     'UPDATE branches SET telegram_chat_id = ? WHERE name = ?',
-                    ['-1003355571066', 'Араванская'],
+                    ['-1003367256314', 'Араванская'],
                     (err) => {
                       if (err) {
                         console.error('Ошибка обновления chat_id для Араванская:', err);
                       } else {
-                        console.log('Chat ID для филиала "Араванская" установлен: -1003355571066');
+                        console.log('Chat ID для филиала "Араванская" установлен: -1003367256314');
                       }
                       continueInitialization();
                     }
