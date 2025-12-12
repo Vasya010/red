@@ -330,25 +330,46 @@ function initializeServer(callback) {
                     );
                   });
                 } else {
+                  // Обновляем chat_id для филиала "Араванская" (всегда обновляем на актуальный)
+                  connection.query(
+                    'UPDATE branches SET telegram_chat_id = ? WHERE name = ?',
+                    ['-1003355571066', 'Араванская'],
+                    (err) => {
+                      if (err) {
+                        console.error('Ошибка обновления chat_id для Араванская:', err);
+                      } else {
+                        console.log('Chat ID для филиала "Араванская" обновлен на -1003355571066');
+                      }
+                    }
+                  );
+                  
+                  // Обновляем chat_id для других филиалов только если они пустые
                   const updateQueries = [
-                    ['Араванская', '-1003355571066'],
-                   
+                    ['american_pizza.osh', '-1003140309410'],
+                    ['Араванский', '-1002311447135'],
+                    ['Ошский район', '-1002638475628'],
                   ];
                   let updated = 0;
-                  updateQueries.forEach(([name, telegram_chat_id]) => {
-                    connection.query(
-                      'UPDATE branches SET telegram_chat_id = ? WHERE name = ? AND (telegram_chat_id IS NULL OR telegram_chat_id = "")',
-                      [telegram_chat_id, name],
-                      (err) => {
-                        if (err) {
-                          connection.release();
-                          return callback(err);
+                  const totalUpdates = updateQueries.length;
+                  
+                  if (totalUpdates === 0) {
+                    continueInitialization();
+                  } else {
+                    updateQueries.forEach(([name, telegram_chat_id]) => {
+                      connection.query(
+                        'UPDATE branches SET telegram_chat_id = ? WHERE name = ? AND (telegram_chat_id IS NULL OR telegram_chat_id = "")',
+                        [telegram_chat_id, name],
+                        (err) => {
+                          if (err) {
+                            connection.release();
+                            return callback(err);
+                          }
+                          updated++;
+                          if (updated === totalUpdates) continueInitialization();
                         }
-                        updated++;
-                        if (updated === updateQueries.length) continueInitialization();
-                      }
-                    );
-                  });
+                      );
+                    });
+                  }
                 }
               });
             });
@@ -4040,18 +4061,29 @@ app.put('/orders/:id', authenticateToken, (req, res) => {
         
         // Отправляем уведомление в телеграм (если настроен)
         if (order.branch_id && TELEGRAM_BOT_TOKEN) {
-          db.query('SELECT telegram_chat_id FROM branches WHERE id = ?', [order.branch_id], (err, branches) => {
+          db.query('SELECT name, telegram_chat_id FROM branches WHERE id = ?', [order.branch_id], (err, branches) => {
             if (!err && branches.length > 0 && branches[0].telegram_chat_id) {
               const chatId = String(branches[0].telegram_chat_id);
+              const branchName = branches[0].name || 'Неизвестный филиал';
               const message = `📦 Статус заказа #${id} изменен на: ${status}`;
+              console.log(`Отправка статуса заказа в Telegram. Chat ID: ${chatId}, Филиал: ${branchName}`);
+              
               axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
                 chat_id: chatId,
                 text: message,
                 parse_mode: 'HTML'
+              }).then(() => {
+                console.log(`Статус заказа успешно отправлен в Telegram. Chat ID: ${chatId}`);
               }).catch(err => {
                 const errorCode = err.response?.data?.error_code;
                 const errorDescription = err.response?.data?.description || err.message;
-                console.error(`Ошибка отправки статуса в Telegram. Chat ID: ${chatId}, Код: ${errorCode}, Описание: ${errorDescription}`);
+                console.error(`Ошибка отправки статуса в Telegram. Chat ID: ${chatId}, Филиал: ${branchName}, Код: ${errorCode}, Описание: ${errorDescription}`);
+                
+                if (errorCode === 400 && errorDescription && errorDescription.includes('chat not found')) {
+                  console.error(`⚠️ Чат не найден для филиала "${branchName}" (chat_id: ${chatId}). Убедитесь, что бот добавлен в группу/канал с этим ID.`);
+                } else if (errorCode === 403) {
+                  console.error(`⚠️ Бот не имеет прав для отправки сообщений в группу филиала "${branchName}" (chat_id: ${chatId}).`);
+                }
               });
             }
           });
