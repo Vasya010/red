@@ -307,28 +307,32 @@ function initializeServer(callback) {
                   return callback(err);
                 }
                 if (branches.length === 0) {
-                  const insertBranches = [
-                   
-                    ['Араванская', '-1003355571066'],
-                   
-                  ];
-                  let inserted = 0;
-                  insertBranches.forEach(([name, telegram_chat_id]) => {
-                    connection.query(
-                      'INSERT INTO branches (name, telegram_chat_id) VALUES (?, ?)',
-                      [name, telegram_chat_id],
-                      (err) => {
-                        if (err) {
-                          connection.release();
-                          return callback(err);
-                        }
-                        inserted++;
-                        if (inserted === insertBranches.length) continueInitialization();
+                  // Создаем филиал "Араванская" только с названием (без chat_id)
+                  connection.query(
+                    'INSERT INTO branches (name) VALUES (?)',
+                    ['Араванская'],
+                    (err) => {
+                      if (err) {
+                        connection.release();
+                        return callback(err);
                       }
-                    );
-                  });
+                      // После создания филиала устанавливаем chat_id
+                      connection.query(
+                        'UPDATE branches SET telegram_chat_id = ? WHERE name = ?',
+                        ['-1003355571066', 'Араванская'],
+                        (err) => {
+                          if (err) {
+                            console.error('Ошибка установки chat_id для Араванская:', err);
+                          } else {
+                            console.log('Chat ID для филиала "Араванская" установлен: -1003355571066');
+                          }
+                          continueInitialization();
+                        }
+                      );
+                    }
+                  );
                 } else {
-                  // Обновляем chat_id для филиала "Араванская" (всегда обновляем на актуальный)
+                  // Устанавливаем chat_id для филиала "Араванская" (всегда обновляем)
                   connection.query(
                     'UPDATE branches SET telegram_chat_id = ? WHERE name = ?',
                     ['-1003355571066', 'Араванская'],
@@ -336,38 +340,11 @@ function initializeServer(callback) {
                       if (err) {
                         console.error('Ошибка обновления chat_id для Араванская:', err);
                       } else {
-                        console.log('Chat ID для филиала "Араванская" обновлен на -1003355571066');
+                        console.log('Chat ID для филиала "Араванская" установлен: -1003355571066');
                       }
+                      continueInitialization();
                     }
                   );
-                  
-                  // Обновляем chat_id для других филиалов только если они пустые
-                  const updateQueries = [
-                  
-                    ['Араванская', '-1003355571066'],
-                  
-                  ];
-                  let updated = 0;
-                  const totalUpdates = updateQueries.length;
-                  
-                  if (totalUpdates === 0) {
-                    continueInitialization();
-                  } else {
-                    updateQueries.forEach(([name, telegram_chat_id]) => {
-                      connection.query(
-                        'UPDATE branches SET telegram_chat_id = ? WHERE name = ? AND (telegram_chat_id IS NULL OR telegram_chat_id = "")',
-                        [telegram_chat_id, name],
-                        (err) => {
-                          if (err) {
-                            connection.release();
-                            return callback(err);
-                          }
-                          updated++;
-                          if (updated === totalUpdates) continueInitialization();
-                        }
-                      );
-                    });
-                  }
                 }
               });
             });
