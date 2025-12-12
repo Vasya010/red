@@ -1602,18 +1602,42 @@ ${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${cashbackEarned.toF
         
         // Обрабатываем кешбэк, затем отправляем в Telegram
         processCashback(() => {
-          // Преобразуем chat_id в строку для надежности
-          const chatIdString = String(chatId);
-          console.log(`Отправка сообщения в Telegram. Chat ID: ${chatIdString}, Филиал: ${branchName}`);
+          // Преобразуем chat_id: для групп Telegram API принимает и строку, и число
+          // Пробуем сначала как число (для супергрупп это может быть важно)
+          const chatIdStr = String(chatId);
+          const chatIdNum = parseInt(chatIdStr, 10);
+          const chatIdString = chatIdStr;
+          console.log(`Отправка сообщения в Telegram. Chat ID: ${chatIdString} (число: ${chatIdNum}), Филиал: ${branchName}`);
           
+          // Сначала проверяем доступность чата через getChat
           axios.post(
-            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getChat`,
             {
-              chat_id: chatIdString,
-              text: orderText,
-              parse_mode: 'Markdown',
+              chat_id: chatIdNum,
             }
-          ).then(response => {
+          ).then(() => {
+            // Чат доступен, отправляем сообщение
+            console.log(`Чат доступен, отправляем сообщение в Telegram. Chat ID: ${chatIdString}`);
+            return axios.post(
+              `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+              {
+                chat_id: chatIdNum, // Используем числовой формат
+                text: orderText,
+                parse_mode: 'Markdown',
+              }
+            );
+          }).catch(getChatError => {
+            // Если getChat не сработал, пробуем отправить напрямую
+            console.warn(`Предупреждение: не удалось проверить доступность чата (${getChatError.response?.data?.description || getChatError.message}), пробуем отправить напрямую`);
+            return axios.post(
+              `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+              {
+                chat_id: chatIdNum, // Пробуем числовой формат
+                text: orderText,
+                parse_mode: 'Markdown',
+              }
+            );
+          }).then(response => {
             console.log(`Сообщение успешно отправлено в Telegram. Chat ID: ${chatIdString}`);
             res.status(200).json({ 
               message: 'Заказ успешно отправлен', 
@@ -1625,14 +1649,42 @@ ${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${cashbackEarned.toF
             const errorDescription = telegramError.response?.data?.description || telegramError.message;
             console.error(`Ошибка отправки в Telegram. Chat ID: ${chatIdString}, Код ошибки: ${errorCode}, Описание: ${errorDescription}`);
             
+            // Если не сработало с числом, пробуем со строкой
+            if (errorCode === 400 && errorDescription && errorDescription.includes('chat not found')) {
+              console.log(`Пробуем отправить с chat_id как строкой: ${chatIdString}`);
+              return axios.post(
+                `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+                {
+                  chat_id: chatIdString, // Пробуем строковый формат
+                  text: orderText,
+                  parse_mode: 'Markdown',
+                }
+              ).then(response => {
+                console.log(`Сообщение успешно отправлено в Telegram (со строковым chat_id). Chat ID: ${chatIdString}`);
+                res.status(200).json({ 
+                  message: 'Заказ успешно отправлен', 
+                  orderId: orderId,
+                  cashbackEarned: cashbackEarned
+                });
+              }).catch(secondError => {
+                const secondErrorCode = secondError.response?.data?.error_code;
+                const secondErrorDesc = secondError.response?.data?.description || secondError.message;
+                console.error(`Ошибка отправки в Telegram (вторая попытка). Chat ID: ${chatIdString}, Код: ${secondErrorCode}, Описание: ${secondErrorDesc}`);
+                
+                if (secondErrorCode === 403) {
+                  return res.status(500).json({
+                    error: `Бот не имеет прав для отправки сообщений в группу (chat_id: ${chatIdString}). Убедитесь, что бот добавлен в группу и имеет права администратора.`,
+                  });
+                }
+                return res.status(500).json({
+                  error: `Чат не найден (chat_id: ${chatIdString}). Убедитесь, что бот добавлен в группу/канал с этим ID. Текущий chat_id: ${chatIdString}. Проверьте, что бот @${TELEGRAM_BOT_TOKEN.split(':')[0]} добавлен в группу.`,
+                });
+              });
+            }
+            
             if (errorCode === 403) {
               return res.status(500).json({
                 error: `Бот не имеет прав для отправки сообщений в группу (chat_id: ${chatIdString}). Убедитесь, что бот добавлен в группу и имеет права администратора.`,
-              });
-            }
-            if (errorCode === 400 && errorDescription && errorDescription.includes('chat not found')) {
-              return res.status(500).json({
-                error: `Чат не найден (chat_id: ${chatIdString}). Убедитесь, что бот добавлен в группу/канал с этим ID. Для получения chat_id добавьте бота @userinfobot в группу или используйте @getidsbot.`,
               });
             }
             return res.status(500).json({ error: `Ошибка отправки в Telegram: ${errorDescription}` });
@@ -4061,26 +4113,48 @@ app.put('/orders/:id', authenticateToken, (req, res) => {
         if (order.branch_id && TELEGRAM_BOT_TOKEN) {
           db.query('SELECT name, telegram_chat_id FROM branches WHERE id = ?', [order.branch_id], (err, branches) => {
             if (!err && branches.length > 0 && branches[0].telegram_chat_id) {
-              const chatId = String(branches[0].telegram_chat_id);
+              const chatIdStr = String(branches[0].telegram_chat_id);
+              const chatIdNum = parseInt(chatIdStr, 10);
               const branchName = branches[0].name || 'Неизвестный филиал';
               const message = `📦 Статус заказа #${id} изменен на: ${status}`;
-              console.log(`Отправка статуса заказа в Telegram. Chat ID: ${chatId}, Филиал: ${branchName}`);
+              console.log(`Отправка статуса заказа в Telegram. Chat ID: ${chatIdStr} (число: ${chatIdNum}), Филиал: ${branchName}`);
               
+              // Пробуем сначала с числовым форматом
               axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-                chat_id: chatId,
+                chat_id: chatIdNum,
                 text: message,
                 parse_mode: 'HTML'
               }).then(() => {
-                console.log(`Статус заказа успешно отправлен в Telegram. Chat ID: ${chatId}`);
+                console.log(`Статус заказа успешно отправлен в Telegram. Chat ID: ${chatIdStr}`);
               }).catch(err => {
                 const errorCode = err.response?.data?.error_code;
                 const errorDescription = err.response?.data?.description || err.message;
-                console.error(`Ошибка отправки статуса в Telegram. Chat ID: ${chatId}, Филиал: ${branchName}, Код: ${errorCode}, Описание: ${errorDescription}`);
                 
+                // Если не сработало с числом, пробуем со строкой
                 if (errorCode === 400 && errorDescription && errorDescription.includes('chat not found')) {
-                  console.error(`⚠️ Чат не найден для филиала "${branchName}" (chat_id: ${chatId}). Убедитесь, что бот добавлен в группу/канал с этим ID.`);
-                } else if (errorCode === 403) {
-                  console.error(`⚠️ Бот не имеет прав для отправки сообщений в группу филиала "${branchName}" (chat_id: ${chatId}).`);
+                  console.log(`Пробуем отправить статус с chat_id как строкой: ${chatIdStr}`);
+                  return axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                    chat_id: chatIdStr,
+                    text: message,
+                    parse_mode: 'HTML'
+                  }).then(() => {
+                    console.log(`Статус заказа успешно отправлен в Telegram (со строковым chat_id). Chat ID: ${chatIdStr}`);
+                  }).catch(secondErr => {
+                    const secondErrorCode = secondErr.response?.data?.error_code;
+                    const secondErrorDesc = secondErr.response?.data?.description || secondErr.message;
+                    console.error(`Ошибка отправки статуса в Telegram (вторая попытка). Chat ID: ${chatIdStr}, Филиал: ${branchName}, Код: ${secondErrorCode}, Описание: ${secondErrorDesc}`);
+                    
+                    if (secondErrorCode === 400 && secondErrorDesc && secondErrorDesc.includes('chat not found')) {
+                      console.error(`⚠️ Чат не найден для филиала "${branchName}" (chat_id: ${chatIdStr}). Убедитесь, что бот добавлен в группу/канал с этим ID.`);
+                    } else if (secondErrorCode === 403) {
+                      console.error(`⚠️ Бот не имеет прав для отправки сообщений в группу филиала "${branchName}" (chat_id: ${chatIdStr}).`);
+                    }
+                  });
+                } else {
+                  console.error(`Ошибка отправки статуса в Telegram. Chat ID: ${chatIdStr}, Филиал: ${branchName}, Код: ${errorCode}, Описание: ${errorDescription}`);
+                  if (errorCode === 403) {
+                    console.error(`⚠️ Бот не имеет прав для отправки сообщений в группу филиала "${branchName}" (chat_id: ${chatIdStr}).`);
+                  }
                 }
               });
             }
