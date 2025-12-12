@@ -345,9 +345,9 @@ function initializeServer(callback) {
                   
                   // Обновляем chat_id для других филиалов только если они пустые
                   const updateQueries = [
-                    ['american_pizza.osh', '-1003140309410'],
-                    ['Араванский', '-1002311447135'],
-                    ['Ошский район', '-1002638475628'],
+                  
+                    ['Араванская', '-1003355571066'],
+                  
                   ];
                   let updated = 0;
                   const totalUpdates = updateQueries.length;
