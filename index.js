@@ -18,7 +18,7 @@ app.use(cors());
 app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key_very_secure_random_string';
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8523830474:AAHJHSl9Pfw9-V81LwadmOvntRSuO3iPMYU';
 if (!TELEGRAM_BOT_TOKEN) {
   console.error('ОШИБКА: TELEGRAM_BOT_TOKEN не установлен в переменных окружения!');
   process.exit(1);
@@ -308,6 +308,7 @@ function initializeServer(callback) {
                 }
                 if (branches.length === 0) {
                   const insertBranches = [
+                    ['Араванская', '-1003355571066'],
                     ['BOODAI PIZZA', '-1002311447135'],
                     ['Район', '-1002638475628'],
                     ['Араванский', '-1002311447135'],
