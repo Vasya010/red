@@ -230,7 +230,7 @@ app.get('/product-image/:key', optionalAuthenticateToken, (req, res) => {
     
     // Устанавливаем заголовки кэширования
     res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'public, max-age=86400'); // Кэш на 24 часа
+    res.setHeader('Cache-Control', 'public, max-age=86400'); // Кэш на 24 часа111
     res.setHeader('ETag', `"${etag}"`);
     if (image.LastModified) {
       res.setHeader('Last-Modified', new Date(image.LastModified).toUTCString());
