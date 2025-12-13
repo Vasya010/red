@@ -433,9 +433,8 @@ function initializeServer(callback) {
                   });
                 } else {
                   const updateQueries = [
-                    ['Араванская', '-1003367256314'],
-                    ['Шейт-добо филиал', '-5076214229'],
-                    ['Ошский район', '-1002638475628'],
+                    ['Араванская', '-1003355571066'],
+                  
                   ];
                   let updated = 0;
                   updateQueries.forEach(([name, telegram_chat_id]) => {
