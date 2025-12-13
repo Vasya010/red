@@ -3445,35 +3445,76 @@ app.post('/telegram/test-chat-id', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'chat_id обязателен' });
   }
   
+  // Проверяем формат chat_id для групп/каналов
+  if (!chat_id.match(/^-\d+$/)) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'Некорректный формат chat_id',
+      message: 'Chat ID для групп/каналов должен начинаться с "-" и содержать только цифры (например: -1001234567890)'
+    });
+  }
+  
   try {
-    const testMessage = '🧪 Тестовое сообщение для проверки подключения';
+    // Сначала пробуем получить информацию о чате
+    let chatInfo = null;
+    try {
+      const chatResponse = await axios.get(
+        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getChat`,
+        {
+          timeout: 5000,
+          params: { chat_id: chat_id }
+        }
+      );
+      chatInfo = chatResponse.data.result;
+    } catch (chatError) {
+      // Если не удалось получить информацию о чате, продолжаем с отправкой тестового сообщения
+      console.log('Не удалось получить информацию о чате, пробуем отправить сообщение');
+    }
+    
+    const testMessage = '🧪 Тестовое сообщение для проверки подключения бота к группе/каналу';
     const result = await sendTelegramMessage(chat_id, testMessage, 1);
     
     if (result.success) {
+      const chatName = chatInfo?.title || chatInfo?.username || 'группа/канал';
       res.json({ 
         success: true, 
-        message: 'Chat ID валиден! Сообщение успешно отправлено.',
-        chat_id: chat_id
+        message: `✅ Chat ID валиден! Тестовое сообщение успешно отправлено в ${chatName}.`,
+        chat_id: chat_id,
+        chatInfo: chatInfo ? {
+          title: chatInfo.title,
+          type: chatInfo.type,
+          username: chatInfo.username
+        } : null
       });
     } else {
+      let errorMessage = result.error;
+      let detailedMessage = result.error;
+      
+      if (result.error === 'Bad Request: chat not found') {
+        detailedMessage = 'Чат/группа не найдена. Убедитесь, что:\n1. Бот добавлен в группу/канал\n2. Chat ID правильный (начинается с "-" для групп)\n3. Бот не был удален из группы';
+      } else if (result.error === 'Forbidden: bot is not a member of the group chat') {
+        detailedMessage = 'Бот не является участником группы. Добавьте бота в группу/канал.';
+      } else if (result.error && result.error.includes('not enough rights')) {
+        detailedMessage = 'У бота недостаточно прав. Убедитесь, что бот имеет права на отправку сообщений в группу/канал.';
+      }
+      
       res.status(400).json({ 
         success: false, 
-        error: result.error,
+        error: errorMessage,
         errorCode: result.errorCode,
-        message: result.error === 'Bad Request: chat not found' 
-          ? 'Чат не найден. Убедитесь, что бот добавлен в группу/канал и имеет права на отправку сообщений.'
-          : result.error
+        message: detailedMessage
       });
     }
   } catch (error) {
     res.status(500).json({ 
       success: false, 
-      error: error.message 
+      error: error.message,
+      message: `Ошибка при проверке chat_id: ${error.message}`
     });
   }
 });
 
-// API для получения списка доступных чатов из Telegram
+// API для получения списка доступных чатов из Telegram (только группы и каналы)
 app.get('/telegram/get-chats', authenticateToken, async (req, res) => {
   try {
     const response = await axios.get(
@@ -3497,49 +3538,265 @@ app.get('/telegram/get-chats', authenticateToken, async (req, res) => {
       
       if (update.message) {
         chat = update.message.chat;
-        chatType = 'message';
+        chatType = update.message.chat.type || 'message';
       } else if (update.channel_post) {
         chat = update.channel_post.chat;
-        chatType = 'channel_post';
+        chatType = 'channel';
       } else if (update.edited_message) {
         chat = update.edited_message.chat;
-        chatType = 'edited_message';
+        chatType = update.edited_message.chat.type || 'edited_message';
+      } else if (update.edited_channel_post) {
+        chat = update.edited_channel_post.chat;
+        chatType = 'channel';
       }
       
-      if (chat && chat.id && !chatIds.has(chat.id.toString())) {
-        chatIds.add(chat.id.toString());
-        chats.push({
-          id: chat.id,
-          title: chat.title || chat.first_name || chat.username || 'Без названия',
-          type: chat.type || chatType,
-          username: chat.username || null
-        });
+      // Фильтруем только группы и каналы (отрицательные ID или тип 'group'/'supergroup'/'channel')
+      if (chat && chat.id) {
+        const isGroupOrChannel = chat.id < 0 || 
+                                 chat.type === 'group' || 
+                                 chat.type === 'supergroup' || 
+                                 chat.type === 'channel';
+        
+        if (isGroupOrChannel && !chatIds.has(chat.id.toString())) {
+          chatIds.add(chat.id.toString());
+          chats.push({
+            id: chat.id,
+            title: chat.title || chat.first_name || chat.username || 'Без названия',
+            type: chat.type || chatType,
+            username: chat.username || null
+          });
+        }
       }
     });
     
-    // Сортируем: сначала группы/каналы (отрицательные ID), потом личные чаты
+    // Сортируем: сначала группы/каналы (отрицательные ID), потом по алфавиту
     chats.sort((a, b) => {
       if (a.id < 0 && b.id > 0) return -1;
       if (a.id > 0 && b.id < 0) return 1;
+      if (a.id < 0 && b.id < 0) {
+        // Для групп/каналов сортируем по названию
+        return (a.title || '').localeCompare(b.title || '');
+      }
       return b.id - a.id;
     });
+    
+    const groupsCount = chats.filter(c => c.id < 0).length;
     
     res.json({ 
       success: true, 
       chats: chats,
       count: chats.length,
+      groupsCount: groupsCount,
       message: chats.length > 0 
-        ? `Найдено ${chats.length} чат(ов). Выберите нужный chat_id.`
-        : 'Чаты не найдены. Отправьте сообщение боту в группе/канале и попробуйте снова.'
+        ? `Найдено ${groupsCount} групп/каналов, где есть бот. Выберите нужный chat_id.`
+        : 'Группы/каналы не найдены. Убедитесь, что:\n1. Бот добавлен в группу/канал\n2. В группе/канале было отправлено хотя бы одно сообщение\n3. Бот имеет права администратора (для каналов)'
     });
   } catch (error) {
     console.error('Ошибка получения чатов из Telegram:', error.message);
     res.status(500).json({ 
       success: false, 
       error: error.message,
-      message: 'Не удалось получить список чатов. Проверьте токен бота.'
+      message: 'Не удалось получить список чатов. Проверьте токен бота и убедитесь, что бот активен.'
     });
   }
+});
+
+// API для получения всех заказов (админ-панель)
+app.get('/orders', authenticateToken, (req, res) => {
+  const { status, branchId, limit = 100, offset = 0, dateFrom, dateTo } = req.query;
+  
+  let query = `
+    SELECT 
+      o.id,
+      o.branch_id,
+      o.total,
+      o.status,
+      o.order_details,
+      o.delivery_details,
+      o.cart_items,
+      o.discount,
+      o.promo_code,
+      o.cashback_used,
+      o.created_at,
+      b.name as branch_name,
+      b.address as branch_address,
+      b.phone as branch_phone
+    FROM orders o
+    LEFT JOIN branches b ON o.branch_id = b.id
+    WHERE 1=1
+  `;
+  const params = [];
+  
+  if (status) {
+    query += ' AND o.status = ?';
+    params.push(status);
+  }
+  
+  if (branchId) {
+    query += ' AND o.branch_id = ?';
+    params.push(branchId);
+  }
+  
+  if (dateFrom) {
+    query += ' AND DATE(o.created_at) >= ?';
+    params.push(dateFrom);
+  }
+  
+  if (dateTo) {
+    query += ' AND DATE(o.created_at) <= ?';
+    params.push(dateTo);
+  }
+  
+  query += ' ORDER BY o.created_at DESC LIMIT ? OFFSET ?';
+  params.push(parseInt(limit), parseInt(offset));
+  
+  db.query(query, params, (err, orders) => {
+    if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+    
+    const parsedOrders = orders.map(order => ({
+      ...order,
+      order_details: order.order_details ? JSON.parse(order.order_details) : {},
+      delivery_details: order.delivery_details ? JSON.parse(order.delivery_details) : {},
+      cart_items: order.cart_items ? JSON.parse(order.cart_items) : []
+    }));
+    
+    res.json(parsedOrders);
+  });
+});
+
+// API для получения статистики заказов
+app.get('/orders/stats', authenticateToken, (req, res) => {
+  const { branchId, dateFrom, dateTo } = req.query;
+  
+  let whereClause = 'WHERE 1=1';
+  const params = [];
+  
+  if (branchId) {
+    whereClause += ' AND branch_id = ?';
+    params.push(branchId);
+  }
+  
+  if (dateFrom) {
+    whereClause += ' AND DATE(created_at) >= ?';
+    params.push(dateFrom);
+  }
+  
+  if (dateTo) {
+    whereClause += ' AND DATE(created_at) <= ?';
+    params.push(dateTo);
+  }
+  
+  const statsQuery = `
+    SELECT 
+      COUNT(*) as total_orders,
+      SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_orders,
+      SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) as processing_orders,
+      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_orders,
+      SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_orders,
+      SUM(total) as total_revenue,
+      AVG(total) as avg_order_value
+    FROM orders
+    ${whereClause}
+  `;
+  
+  db.query(statsQuery, params, (err, stats) => {
+    if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+    res.json(stats[0] || {});
+  });
+});
+
+// API для получения одного заказа
+app.get('/orders/:id', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  
+  db.query(`
+    SELECT 
+      o.*,
+      b.name as branch_name,
+      b.address as branch_address,
+      b.phone as branch_phone
+    FROM orders o
+    LEFT JOIN branches b ON o.branch_id = b.id
+    WHERE o.id = ?
+  `, [id], (err, orders) => {
+    if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+    if (orders.length === 0) return res.status(404).json({ error: 'Заказ не найден' });
+    
+    const order = orders[0];
+    order.order_details = order.order_details ? JSON.parse(order.order_details) : {};
+    order.delivery_details = order.delivery_details ? JSON.parse(order.delivery_details) : {};
+    order.cart_items = order.cart_items ? JSON.parse(order.cart_items) : [];
+    
+    res.json(order);
+  });
+});
+
+// API для обновления статуса заказа
+app.put('/orders/:id/status', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  
+  const validStatuses = ['pending', 'processing', 'completed', 'cancelled'];
+  if (!validStatuses.includes(status)) {
+    return res.status(400).json({ error: 'Некорректный статус заказа' });
+  }
+  
+  db.query(
+    'UPDATE orders SET status = ? WHERE id = ?',
+    [status, id],
+    (err) => {
+      if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+      
+      // Получаем обновленный заказ
+      db.query('SELECT * FROM orders WHERE id = ?', [id], (err, orders) => {
+        if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+        
+        const order = orders[0];
+        order.order_details = order.order_details ? JSON.parse(order.order_details) : {};
+        order.delivery_details = order.delivery_details ? JSON.parse(order.delivery_details) : {};
+        order.cart_items = order.cart_items ? JSON.parse(order.cart_items) : [];
+        
+        res.json({ message: 'Статус заказа обновлен', order });
+      });
+    }
+  );
+});
+
+// API для получения новых заказов (для real-time обновлений)
+app.get('/orders/new', authenticateToken, (req, res) => {
+  const { lastOrderId = 0 } = req.query;
+  
+  db.query(`
+    SELECT 
+      o.id,
+      o.branch_id,
+      o.total,
+      o.status,
+      o.order_details,
+      o.delivery_details,
+      o.cart_items,
+      o.discount,
+      o.promo_code,
+      o.cashback_used,
+      o.created_at,
+      b.name as branch_name
+    FROM orders o
+    LEFT JOIN branches b ON o.branch_id = b.id
+    WHERE o.id > ? AND o.status IN ('pending', 'processing')
+    ORDER BY o.created_at DESC
+    LIMIT 50
+  `, [lastOrderId], (err, orders) => {
+    if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+    
+    const parsedOrders = orders.map(order => ({
+      ...order,
+      order_details: order.order_details ? JSON.parse(order.order_details) : {},
+      delivery_details: order.delivery_details ? JSON.parse(order.delivery_details) : {},
+      cart_items: order.cart_items ? JSON.parse(order.cart_items) : []
+    }));
+    
+    res.json(parsedOrders);
+  });
 });
 
 app.post('/categories', authenticateToken, (req, res) => {
