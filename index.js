@@ -72,7 +72,7 @@ app.use((req, res, next) => {
 });
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key_very_secure_random_string';
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8523830474:AAHJHSl9Pfw9-V81LwadmOvntRSuO3iPMYU';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7687040032:AAH8DJVqcrnKwx_iREzxfMi-Go0SHWDFAiE';
 const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY || 'GIMZKRMOGP4F0MOTLVCE';
 const S3_SECRET_KEY = process.env.S3_SECRET_KEY || 'WvhFfIzzCkITUrXfD8JfoDne7LmBhnNzDuDBj89I';
 const MYSQL_HOST = process.env.MYSQL_HOST || 'vh438.timeweb.ru';
