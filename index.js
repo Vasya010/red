@@ -72,13 +72,13 @@ app.use((req, res, next) => {
 });
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key_very_secure_random_string';
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '763922301';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8523830474:AAHJHSl9Pfw9-V81LwadmOvntRSuO3iPMYU';
 const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY || 'GIMZKRMOGP4F0MOTLVCE';
 const S3_SECRET_KEY = process.env.S3_SECRET_KEY || 'WvhFfIzzCkITUrXfD8JfoDne7LmBhnNzDuDBj89I';
-const MYSQL_HOST = process.env.MYSQL_HOST || 'vh446.timeweb.ru';
-const MYSQL_USER = process.env.MYSQL_USER || 'cz45780_pizzaame';
+const MYSQL_HOST = process.env.MYSQL_HOST || 'vh438.timeweb.ru';
+const MYSQL_USER = process.env.MYSQL_USER || 'ch79145_pizza';
 const MYSQL_PASSWORD = process.env.MYSQL_PASSWORD || 'Vasya11091109';
-const MYSQL_DATABASE = process.env.MYSQL_DATABASE || 'cz45780_pizzaame';
+const MYSQL_DATABASE = process.env.MYSQL_DATABASE || 'ch79145_pizza';
 // Локальный SMS Gateway (на вашем сервере)22
 const SMS_GATEWAY_URL = process.env.SMS_GATEWAY_URL || 'https://vasya010-red-bdf5.twc1.net/sms/send';
 const SMS_GATEWAY_API_KEY = process.env.SMS_GATEWAY_API_KEY || '';
