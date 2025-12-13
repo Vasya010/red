@@ -98,7 +98,7 @@ const S3_BUCKET = 'a2c31109-3cf2c97b-aca1-42b0-a822-3e0ade279447';
 // Функция для МОМЕНТАЛЬНОЙ отправки в Telegram (быстрая, неблокирующая)
 async function sendTelegramMessage(chatId, text, maxRetries = 2) {
   const axiosConfig = {
-    timeout: 5000, // 5 секунд таймаут (быстро для моментальной отп54545равки)
+    timeout: 5000, // 5 секунд таймаут (быстро для моментальной отправки)
     headers: {
       'Content-Type': 'application/json',
       'Connection': 'keep-alive'
@@ -122,14 +122,14 @@ async function sendTelegramMessage(chatId, text, maxRetries = 2) {
         axiosConfig
       );
       const duration = Date.now() - startTime;
-      console.log(`✅ Telegram сообщение отправлено МОМЕНТАЛЬНО (попытка ${attempt}, время: ${duration}ms)`);
+      console.log(`✅ Telegram сообщение отправлено МОМЕНТАЛЬНО (chat_id: ${chatId}, попытка ${attempt}, время: ${duration}ms)`);
       return { success: true, response: response.data };
     } catch (error) {
       const isLastAttempt = attempt === maxRetries;
       const errorMessage = error.response?.data?.description || error.message;
       const errorCode = error.response?.data?.error_code;
       
-      console.error(`❌ Попытка ${attempt}/${maxRetries} отправки в Telegram:`, errorMessage);
+      console.error(`❌ Попытка ${attempt}/${maxRetries} отправки в Telegram (chat_id: ${chatId}):`, errorMessage);
       
       // Если это последняя попытка, возвращаем ошибку
       if (isLastAttempt) {
@@ -150,13 +150,19 @@ async function sendTelegramMessage(chatId, text, maxRetries = 2) {
 }
 
 // Функция для неблокирующей отправки в Telegram (fire and forget)
-function sendTelegramMessageAsync(chatId, text) {
+function sendTelegramMessageAsync(chatId, text, branchName = '') {
   // Запускаем асинхронно, не ждем результата
   setImmediate(async () => {
     try {
       const result = await sendTelegramMessage(chatId, text);
       if (!result.success) {
-        console.error('⚠️ Не удалось отправить сообщение в Telegram (некритично):', result.error);
+        const branchInfo = branchName ? ` (Филиал: ${branchName})` : '';
+        console.error(`⚠️ Не удалось отправить сообщение в Telegram${branchInfo} (chat_id: ${chatId}, некритично):`, result.error);
+        
+        // Дополнительная информация для отладки
+        if (result.error && result.error.includes('chat not found')) {
+          console.error(`💡 Подсказка: Убедитесь, что бот добавлен в чат/группу с ID ${chatId}, или обновите telegram_chat_id для филиала в базе данных.`);
+        }
       }
     } catch (error) {
       console.error('⚠️ Ошибка при асинхронной отправке в Telegram (некритично):', error.message);
@@ -436,10 +442,17 @@ function initializeServer(callback) {
                     ['Араванская', '-1003355571066'],
                   
                   ];
+                  // Также обновляем филиал с id=3 (Араванская) напрямую
+                  const updateById = [
+                    [3, '-1003355571066'], // id филиала, chat_id
+                  ];
                   let updated = 0;
+                  const totalUpdates = updateQueries.length + updateById.length;
+                  
                   updateQueries.forEach(([name, telegram_chat_id]) => {
+                    // Обновляем chat_id для указанных филиалов всегда (даже если уже установлен)
                     connection.query(
-                      'UPDATE branches SET telegram_chat_id = ? WHERE name = ? AND (telegram_chat_id IS NULL OR telegram_chat_id = "")',
+                      'UPDATE branches SET telegram_chat_id = ? WHERE name = ?',
                       [telegram_chat_id, name],
                       (err) => {
                         if (err) {
@@ -447,7 +460,23 @@ function initializeServer(callback) {
                           return callback(err);
                         }
                         updated++;
-                        if (updated === updateQueries.length) continueInitialization();
+                        if (updated === totalUpdates) continueInitialization();
+                      }
+                    );
+                  });
+                  
+                  updateById.forEach(([id, telegram_chat_id]) => {
+                    // Обновляем chat_id по id филиала
+                    connection.query(
+                      'UPDATE branches SET telegram_chat_id = ? WHERE id = ?',
+                      [telegram_chat_id, id],
+                      (err) => {
+                        if (err) {
+                          connection.release();
+                          return callback(err);
+                        }
+                        updated++;
+                        if (updated === totalUpdates) continueInitialization();
                       }
                     );
                   });
@@ -1560,7 +1589,7 @@ ${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${cashbackEarned.toF
         });
         
         // Отправляем в Telegram МОМЕНТАЛЬНО и АСИНХРОННО (не блокируем ответ)
-        sendTelegramMessageAsync(chatId, orderText);
+        sendTelegramMessageAsync(chatId, orderText, branchName);
         
         // Обрабатываем кешбэк параллельно (не блокируем отправку в Telegram)
         // Обновляем order_id в транзакциях кешбэка
@@ -1739,6 +1768,10 @@ ${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${cashbackEarned.toF
             }
           }).catch((error) => {
             // Заказ сохранен в БД, но Telegram не отправился - все равно успех
+            const errorMsg = error.response?.data?.description || error.message;
+            if (errorMsg && errorMsg.includes('chat not found')) {
+              console.error(`⚠️ Telegram chat not found для филиала "${branchName}" (chat_id: ${chatId}). Убедитесь, что бот добавлен в чат/группу.`);
+            }
             results.push({
               localOrderId: localOrderId || `order_${index}`,
               success: true,
