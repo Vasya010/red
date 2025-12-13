@@ -72,7 +72,13 @@ app.use((req, res, next) => {
 });
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key_very_secure_random_string';
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7687040032:AAH8DJVqcrnKwx_iREzxfMi-Go0SHWDFAiE';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_WEBHOOK_URL = process.env.TELEGRAM_WEBHOOK_URL; // URL для webhook (опционально)
+
+if (!TELEGRAM_BOT_TOKEN) {
+  console.error('⚠️ TELEGRAM_BOT_TOKEN не установлен в переменных окружения!');
+  console.error('⚠️ Добавьте TELEGRAM_BOT_TOKEN в файл .env');
+}
 const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY || 'GIMZKRMOGP4F0MOTLVCE';
 const S3_SECRET_KEY = process.env.S3_SECRET_KEY || 'WvhFfIzzCkITUrXfD8JfoDne7LmBhnNzDuDBj89I';
 const MYSQL_HOST = process.env.MYSQL_HOST || 'vh438.timeweb.ru';
@@ -152,21 +158,39 @@ async function sendTelegramMessage(chatId, text, maxRetries = 2) {
 // Функция для неблокирующей отправки в Telegram (fire and forget)
 function sendTelegramMessageAsync(chatId, text, branchName = '') {
   // Запускаем асинхронно, не ждем результата
-  setImmediate(async () => {
-    try {
-      const result = await sendTelegramMessage(chatId, text);
-      if (!result.success) {
-        const branchInfo = branchName ? ` (Филиал: ${branchName})` : '';
-        console.error(`⚠️ Не удалось отправить сообщение в Telegram${branchInfo} (chat_id: ${chatId}, некритично):`, result.error);
-        
-        // Дополнительная информация для отладки
-        if (result.error && result.error.includes('chat not found')) {
-          console.error(`💡 Подсказка: Убедитесь, что бот добавлен в чат/группу с ID ${chatId}, или обновите telegram_chat_id для филиала в базе данных.`);
+  return new Promise((resolve) => {
+    setImmediate(async () => {
+      try {
+        if (!chatId) {
+          console.error(`⚠️ Chat ID не указан для филиала "${branchName}"`);
+          resolve({ success: false, error: 'Chat ID не указан' });
+          return;
         }
+
+        if (!TELEGRAM_BOT_TOKEN) {
+          console.error('⚠️ TELEGRAM_BOT_TOKEN не настроен');
+          resolve({ success: false, error: 'Bot token не настроен' });
+          return;
+        }
+
+        const result = await sendTelegramMessage(chatId, text);
+        if (!result.success) {
+          const branchInfo = branchName ? ` (Филиал: ${branchName})` : '';
+          console.error(`⚠️ Не удалось отправить сообщение в Telegram${branchInfo} (chat_id: ${chatId}, некритично):`, result.error);
+          
+          // Дополнительная информация для отладки
+          if (result.error && result.error.includes('chat not found')) {
+            console.error(`💡 Подсказка: Убедитесь, что бот добавлен в чат/группу с ID ${chatId}, или обновите telegram_chat_id для филиала в базе данных.`);
+          }
+        } else {
+          console.log(`✅ Заказ успешно отправлен в Telegram группу (chat_id: ${chatId}, филиал: ${branchName})`);
+        }
+        resolve(result);
+      } catch (error) {
+        console.error('⚠️ Ошибка при асинхронной отправке в Telegram (некритично):', error.message);
+        resolve({ success: false, error: error.message });
       }
-    } catch (error) {
-      console.error('⚠️ Ошибка при асинхронной отправке в Telegram (некритично):', error.message);
-    }
+    });
   });
 }
 
@@ -1538,24 +1562,6 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
       // Кешбэк временно не обрабатываем
       const processCashback = (callback) => callback();
     
-    const orderText = `
-📦 *Новый заказ:*
-🏪 Филиал: ${escapeMarkdown(branchName)}
-👤 Имя: ${escapeMarkdown(orderDetails.name || deliveryDetails.name)}
-📞 Телефон: ${escapeMarkdown(phone)}
-🔑 Код клиента: ${escapeMarkdown(userCode || "—")}
-📝 Комментарии: ${escapeMarkdown(orderDetails.comments || deliveryDetails.comments || "Нет")}
-📍 Адрес доставки: ${escapeMarkdown(deliveryDetails.address || "Самовывоз")}
-💳 Способ оплаты: ${escapeMarkdown(paymentMethodText)}
-🛒 *Товары:*
-${cartItems.map((item) => `- ${escapeMarkdown(item.name)} (${item.quantity} шт. по ${item.originalPrice} сом)`).join('\n')}
-💰 Сумма товаров: ${total.toFixed(2)} сом
-${discount > 0 ? `💸 Скидка (${discount}%): -${(total * discount / 100).toFixed(2)} сом` : ''}
-${cashbackUsedAmount > 0 ? `🎁 Кешбэк использован: -${cashbackUsedAmount.toFixed(2)} сом` : ''}
-${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${cashbackEarned.toFixed(2)} сом` : ''}
-💰 *Итоговая сумма: ${finalTotal.toFixed(2)} сом*
-    `;
-    
     db.query(
       `
       INSERT INTO orders (branch_id, total, status, order_details, delivery_details, cart_items, discount, promo_code, cashback_used)
@@ -1587,6 +1593,38 @@ ${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${cashbackEarned.toF
           orderId: orderId,
           cashbackEarned: cashbackEarned
         });
+        
+        // Формируем текст заказа с номером заказа
+        const orderText = `
+📦 *НОВЫЙ ЗАКАЗ С САЙТА*
+
+🆔 *Номер заказа: #${orderId}*
+🏪 Филиал: ${escapeMarkdown(branchName)}
+👤 Имя: ${escapeMarkdown(orderDetails.name || deliveryDetails.name || "Не указано")}
+📞 Телефон: ${escapeMarkdown(phone)}
+🔑 Код клиента: ${escapeMarkdown(userCode || "—")}
+📝 Комментарии: ${escapeMarkdown(orderDetails.comments || deliveryDetails.comments || "Нет")}
+📍 Адрес доставки: ${escapeMarkdown(deliveryDetails.address || "Самовывоз")}
+💳 Способ оплаты: ${escapeMarkdown(paymentMethodText)}
+
+🛒 *Товары:*
+${cartItems.map((item) => `• ${escapeMarkdown(item.name)} × ${item.quantity} шт. = ${((item.originalPrice || 0) * item.quantity).toFixed(2)} сом`).join('\n')}
+
+💰 Сумма товаров: ${total.toFixed(2)} сом
+${discount > 0 ? `💸 Скидка (${discount}%): -${(total * discount / 100).toFixed(2)} сом` : ''}
+${cashbackUsedAmount > 0 ? `🎁 Кешбэк использован: -${cashbackUsedAmount.toFixed(2)} сом` : ''}
+${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${cashbackEarned.toFixed(2)} сом` : ''}
+
+💰 *ИТОГО: ${finalTotal.toFixed(2)} сом*
+
+⏰ ${new Date().toLocaleString('ru-RU', { 
+  day: '2-digit', 
+  month: '2-digit', 
+  year: 'numeric', 
+  hour: '2-digit', 
+  minute: '2-digit' 
+})}
+        `;
         
         // Отправляем в Telegram МОМЕНТАЛЬНО и АСИНХРОННО (не блокируем ответ)
         sendTelegramMessageAsync(chatId, orderText, branchName);
@@ -1749,8 +1787,33 @@ ${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${cashbackEarned.toF
 
           const orderId = result.insertId;
 
+          // Формируем улучшенный текст заказа с номером
+          const improvedOrderText = `
+📦 *НОВЫЙ ЗАКАЗ (ОФЛАЙН)*
+
+🆔 *Номер заказа: #${orderId}*
+🏪 Филиал: ${escapeMarkdown(branchName)}
+👤 Имя: ${escapeMarkdown(orderDetails?.name || deliveryDetails?.name || "Не указано")}
+📞 Телефон: ${escapeMarkdown(phone || "Не указан")}
+📍 Адрес доставки: ${escapeMarkdown(deliveryDetails?.address || "Самовывоз")}
+💳 Способ оплаты: ${escapeMarkdown(paymentMethodText)}
+
+🛒 *Товары:*
+${cartItems.map((item) => `• ${escapeMarkdown(item.name)} × ${item.quantity} шт. = ${((item.originalPrice || item.price || 0) * item.quantity).toFixed(2)} сом`).join('\n')}
+
+💰 *ИТОГО: ${finalTotal.toFixed(2)} сом*
+
+⏰ ${new Date().toLocaleString('ru-RU', { 
+  day: '2-digit', 
+  month: '2-digit', 
+  year: 'numeric', 
+  hour: '2-digit', 
+  minute: '2-digit' 
+})}
+          `;
+
           // Отправляем в Telegram асинхронно
-          sendTelegramMessage(chatId, orderText).then((telegramResult) => {
+          sendTelegramMessageAsync(chatId, improvedOrderText, branchName).then((telegramResult) => {
             results.push({
               localOrderId: localOrderId || `order_${index}`,
               success: true,
@@ -3799,6 +3862,403 @@ app.get('/orders/new', authenticateToken, (req, res) => {
   });
 });
 
+// Webhook для Telegram бота - принимает обновления от Telegram
+app.post('/telegram/webhook', async (req, res) => {
+  if (!TELEGRAM_BOT_TOKEN) {
+    return res.status(500).json({ error: 'Telegram bot token не настроен' });
+  }
+
+  try {
+    const update = req.body;
+    
+    // Отвечаем Telegram сразу, чтобы не было таймаута
+    res.status(200).json({ ok: true });
+    
+    // Обрабатываем обновление асинхронно
+    processTelegramUpdate(update);
+  } catch (error) {
+    console.error('Ошибка обработки webhook Telegram:', error);
+    res.status(200).json({ ok: true }); // Все равно отвечаем OK, чтобы Telegram не повторял запрос
+  }
+});
+
+// Функция обработки обновлений от Telegram
+async function processTelegramUpdate(update) {
+  try {
+    // Обработка сообщений
+    if (update.message) {
+      const message = update.message;
+      const chatId = message.chat.id;
+      const text = message.text || '';
+      const from = message.from;
+      
+      // Игнорируем сообщения из групп (только личные сообщения)
+      if (message.chat.type !== 'private') {
+        return;
+      }
+      
+      // Обработка команд
+      if (text.startsWith('/')) {
+        await handleTelegramCommand(chatId, text, from);
+        return;
+      }
+      
+      // Обработка текстовых заказов
+      if (text.trim().length > 0) {
+        await handleTelegramOrder(chatId, text, from);
+      }
+    }
+    
+    // Обработка callback_query (кнопки)
+    if (update.callback_query) {
+      const callback = update.callback_query;
+      await handleTelegramCallback(callback);
+    }
+  } catch (error) {
+    console.error('Ошибка обработки обновления Telegram:', error);
+  }
+}
+
+// Обработка команд бота
+async function handleTelegramCommand(chatId, command, from) {
+  const commandName = command.split(' ')[0].toLowerCase();
+  
+  switch (commandName) {
+    case '/start':
+      await sendTelegramMessage(chatId, `
+🍕 *Добро пожаловать в BOODAI PIZZA!*
+
+Я помогу вам оформить заказ.
+
+📋 *Доступные команды:*
+/start - Начать работу
+/menu - Посмотреть меню
+/order - Оформить заказ
+/status - Проверить статус заказа
+/help - Помощь
+
+Просто напишите мне, что вы хотите заказать, и я помогу оформить заказ!
+      `);
+      break;
+      
+    case '/menu':
+      await sendMenuToTelegram(chatId);
+      break;
+      
+    case '/order':
+      await sendTelegramMessage(chatId, `
+📝 *Оформление заказа*
+
+Напишите мне ваш заказ в следующем формате:
+
+*Пример:*
+🍕 Пицца Маргарита - 1 шт
+🥤 Кола - 2 шт
+📍 Адрес: ул. Ленина, 10
+📞 Телефон: +996505001093
+💬 Комментарий: Без лука
+
+Или просто опишите, что вы хотите заказать, и я помогу!
+      `);
+      break;
+      
+    case '/help':
+      await sendTelegramMessage(chatId, `
+❓ *Помощь*
+
+Для оформления заказа просто напишите мне:
+- Что вы хотите заказать
+- Ваш адрес доставки
+- Контактный телефон
+
+Или используйте команду /order для подробной инструкции.
+
+📞 Если возникли вопросы, свяжитесь с нами по телефону.
+      `);
+      break;
+      
+    default:
+      await sendTelegramMessage(chatId, 'Неизвестная команда. Используйте /help для списка команд.');
+  }
+}
+
+// Отправка меню в Telegram
+async function sendMenuToTelegram(chatId) {
+  try {
+    db.query(`
+      SELECT p.name, p.price_single, p.price_small, p.price_medium, p.price_large, 
+             c.name as category_name, b.name as branch_name
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      LEFT JOIN branches b ON p.branch_id = b.id
+      WHERE p.price_single > 0 OR p.price_small > 0 OR p.price_medium > 0 OR p.price_large > 0
+      ORDER BY c.name, p.name
+      LIMIT 50
+    `, async (err, products) => {
+      if (err) {
+        await sendTelegramMessage(chatId, '❌ Ошибка загрузки меню. Попробуйте позже.');
+        return;
+      }
+      
+      if (products.length === 0) {
+        await sendTelegramMessage(chatId, '📋 Меню пока пусто. Загляните позже!');
+        return;
+      }
+      
+      let menuText = '🍕 *МЕНЮ BOODAI PIZZA*\n\n';
+      let currentCategory = '';
+      
+      products.forEach(product => {
+        if (product.category_name !== currentCategory) {
+          currentCategory = product.category_name;
+          menuText += `\n*${currentCategory || 'Без категории'}*\n`;
+        }
+        
+        menuText += `\n🍴 ${product.name}`;
+        
+        if (product.price_small) menuText += `\n   Маленький: ${product.price_small} сом`;
+        if (product.price_medium) menuText += `\n   Средний: ${product.price_medium} сом`;
+        if (product.price_large) menuText += `\n   Большой: ${product.price_large} сом`;
+        if (product.price_single) menuText += `\n   Цена: ${product.price_single} сом`;
+        
+        menuText += '\n';
+      });
+      
+      menuText += '\n💬 Напишите /order чтобы оформить заказ';
+      
+      await sendTelegramMessage(chatId, menuText);
+    });
+  } catch (error) {
+    console.error('Ошибка отправки меню:', error);
+  }
+}
+
+// Обработка заказа из Telegram
+async function handleTelegramOrder(chatId, text, from) {
+  try {
+    // Парсим заказ из текста
+    const orderData = parseOrderFromText(text, from);
+    
+    if (!orderData.phone) {
+      await sendTelegramMessage(chatId, `
+❌ *Не указан телефон*
+
+Пожалуйста, укажите ваш контактный телефон в формате:
+📞 +996505001093
+
+Или напишите заказ заново с указанием телефона.
+      `);
+      return;
+    }
+    
+    // Получаем филиал по умолчанию (первый) или можно добавить выбор
+    db.query('SELECT id, name FROM branches LIMIT 1', async (err, branches) => {
+      if (err || branches.length === 0) {
+        await sendTelegramMessage(chatId, '❌ Ошибка: филиалы не найдены. Свяжитесь с администратором.');
+        return;
+      }
+      
+      const branchId = branches[0].id;
+      const branchName = branches[0].name;
+      
+      // Создаем заказ
+      const orderDetails = {
+        name: orderData.name || from.first_name || 'Клиент',
+        phone: orderData.phone,
+        comments: orderData.comments || `Заказ через Telegram от @${from.username || 'пользователя'}`
+      };
+      
+      const deliveryDetails = {
+        name: orderData.name || from.first_name || 'Клиент',
+        phone: orderData.phone,
+        address: orderData.address || 'Не указан'
+      };
+      
+      const cartItems = orderData.items || [];
+      
+      // Если товары не распознаны, создаем заказ с комментарием
+      if (cartItems.length === 0) {
+        cartItems.push({
+          name: 'Заказ из Telegram',
+          quantity: 1,
+          originalPrice: 0,
+          price: 0
+        });
+      }
+      
+      const total = cartItems.reduce((sum, item) => 
+        sum + (parseFloat(item.originalPrice || item.price || 0) * (item.quantity || 1)), 0
+      );
+      
+      // Сохраняем заказ в базу данных
+      db.query(
+        `INSERT INTO orders (branch_id, total, status, order_details, delivery_details, cart_items, discount, promo_code, cashback_used)
+         VALUES (?, ?, 'pending', ?, ?, ?, 0, NULL, 0)`,
+        [
+          branchId,
+          total,
+          JSON.stringify(orderData),
+          JSON.stringify(deliveryDetails),
+          JSON.stringify(cartItems)
+        ],
+        async (err, result) => {
+          if (err) {
+            console.error('Ошибка сохранения заказа из Telegram:', err);
+            await sendTelegramMessage(chatId, '❌ Ошибка при сохранении заказа. Попробуйте позже или свяжитесь с нами по телефону.');
+            return;
+          }
+          
+          const orderId = result.insertId;
+          
+          // Отправляем подтверждение клиенту
+          await sendTelegramMessage(chatId, `
+✅ *Заказ принят!*
+
+📦 Номер заказа: #${orderId}
+🏪 Филиал: ${branchName}
+💰 Сумма: ${total.toFixed(2)} сом
+📞 Телефон: ${orderData.phone}
+${orderData.address ? `📍 Адрес: ${orderData.address}` : ''}
+
+⏳ Ваш заказ обрабатывается. Мы свяжемся с вами в ближайшее время!
+
+Используйте /status для проверки статуса заказа.
+          `);
+          
+          // Отправляем уведомление в группу филиала (если настроен chat_id)
+          db.query('SELECT telegram_chat_id FROM branches WHERE id = ?', [branchId], async (err, branchData) => {
+            if (!err && branchData.length > 0 && branchData[0].telegram_chat_id) {
+              const orderText = `
+📦 *Новый заказ из Telegram:*
+🏪 Филиал: ${branchName}
+👤 Имя: ${orderData.name || from.first_name || 'Клиент'}
+📞 Телефон: ${orderData.phone}
+📍 Адрес: ${orderData.address || 'Не указан'}
+💬 Комментарий: ${orderData.comments || text.substring(0, 200)}
+🛒 *Товары:*
+${cartItems.map(item => `- ${item.name} (${item.quantity || 1} шт. по ${item.originalPrice || item.price || 0} сом)`).join('\n')}
+💰 *Итоговая сумма: ${total.toFixed(2)} сом*
+📱 Заказ через Telegram от @${from.username || from.first_name || 'пользователя'}
+              `;
+              
+              await sendTelegramMessageAsync(branchData[0].telegram_chat_id, orderText, branchName);
+            }
+          });
+          
+          console.log(`📱 [${new Date().toISOString()}] Новый заказ из Telegram: ID ${orderId}, Телефон: ${orderData.phone}`);
+        }
+      );
+    });
+  } catch (error) {
+    console.error('Ошибка обработки заказа из Telegram:', error);
+    await sendTelegramMessage(chatId, '❌ Произошла ошибка при обработке заказа. Попробуйте позже.');
+  }
+}
+
+// Парсинг заказа из текста
+function parseOrderFromText(text, from) {
+  const orderData = {
+    name: from.first_name || null,
+    phone: null,
+    address: null,
+    comments: null,
+    items: []
+  };
+  
+  // Поиск телефона
+  const phoneMatch = text.match(/(\+?\d{1,3}[\s-]?)?\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}/);
+  if (phoneMatch) {
+    orderData.phone = phoneMatch[0].replace(/\s/g, '');
+  }
+  
+  // Поиск адреса
+  const addressMatch = text.match(/(?:адрес|адресс?|address)[:：]?\s*(.+?)(?:\n|$)/i);
+  if (addressMatch) {
+    orderData.address = addressMatch[1].trim();
+  }
+  
+  // Поиск имени
+  const nameMatch = text.match(/(?:имя|name)[:：]?\s*(.+?)(?:\n|$)/i);
+  if (nameMatch) {
+    orderData.name = nameMatch[1].trim();
+  }
+  
+  // Поиск комментария
+  const commentMatch = text.match(/(?:комментарий|коммент|comment)[:：]?\s*(.+?)(?:\n|$)/i);
+  if (commentMatch) {
+    orderData.comments = commentMatch[1].trim();
+  }
+  
+  // Простой парсинг товаров (можно улучшить)
+  const lines = text.split('\n');
+  lines.forEach(line => {
+    if (line.includes(' - ') || line.includes(' x ') || line.includes(' шт')) {
+      const itemMatch = line.match(/(.+?)\s*[-x]\s*(\d+)/);
+      if (itemMatch) {
+        orderData.items.push({
+          name: itemMatch[1].trim(),
+          quantity: parseInt(itemMatch[2]) || 1,
+          originalPrice: 0,
+          price: 0
+        });
+      }
+    }
+  });
+  
+  return orderData;
+}
+
+// Обработка callback_query (кнопки)
+async function handleTelegramCallback(callback) {
+  const chatId = callback.message.chat.id;
+  const data = callback.data;
+  
+  // Отвечаем на callback
+  try {
+    await axios.post(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/answerCallbackQuery`,
+      {
+        callback_query_id: callback.id
+      }
+    );
+  } catch (error) {
+    console.error('Ошибка ответа на callback:', error);
+  }
+  
+  // Обработка различных callback
+  // Можно добавить интерактивное меню, выбор товаров и т.д.
+}
+
+// Инициализация webhook при старте сервера
+async function setupTelegramWebhook() {
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.log('⚠️ Telegram bot token не настроен, webhook не будет установлен');
+    return;
+  }
+  
+  // Если указан URL для webhook, устанавливаем его
+  if (TELEGRAM_WEBHOOK_URL) {
+    try {
+      const response = await axios.post(
+        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook`,
+        {
+          url: `${TELEGRAM_WEBHOOK_URL}/telegram/webhook`
+        }
+      );
+      
+      if (response.data.ok) {
+        console.log('✅ Telegram webhook установлен:', TELEGRAM_WEBHOOK_URL);
+      } else {
+        console.error('❌ Ошибка установки webhook:', response.data.description);
+      }
+    } catch (error) {
+      console.error('❌ Ошибка установки Telegram webhook:', error.message);
+    }
+  } else {
+    console.log('ℹ️ TELEGRAM_WEBHOOK_URL не указан. Используйте polling или укажите URL для webhook.');
+  }
+}
+
 app.post('/categories', authenticateToken, (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'Название категории обязательно' });
@@ -4998,11 +5458,14 @@ initializeServer((err) => {
     process.exit(1);
   }
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
+  app.listen(PORT, async () => {
     const timestamp = new Date().toISOString();
     console.log(`\n${'='.repeat(60)}`);
     console.log(`🚀 [${timestamp}] Сервер запущен на порту ${PORT}`);
     console.log(`🌐 [${timestamp}] API доступен по адресу: http://localhost:${PORT}`);
+    
+    // Устанавливаем webhook для Telegram бота после запуска сервера
+    await setupTelegramWebhook();
     console.log(`📡 [${timestamp}] Публичные endpoints:`);
     console.log(`   - GET  /api/public/branches`);
     console.log(`   - GET  /api/public/branches/:branchId/products`);
