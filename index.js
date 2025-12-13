@@ -98,7 +98,7 @@ const S3_BUCKET = 'a2c31109-3cf2c97b-aca1-42b0-a822-3e0ade279447';
 // Функция для МОМЕНТАЛЬНОЙ отправки в Telegram (быстрая, неблокирующая)
 async function sendTelegramMessage(chatId, text, maxRetries = 2) {
   const axiosConfig = {
-    timeout: 5000, // 5 секунд таймаут (быстро для моментальной отправки)
+    timeout: 5000, // 5 секунд таймаут (быстро для моментальной отп54545равки)
     headers: {
       'Content-Type': 'application/json',
       'Connection': 'keep-alive'
