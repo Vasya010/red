@@ -3438,6 +3438,110 @@ app.delete('/branches/:id', authenticateToken, (req, res) => {
   });
 });
 
+// API для проверки Telegram chat_id
+app.post('/telegram/test-chat-id', authenticateToken, async (req, res) => {
+  const { chat_id } = req.body;
+  if (!chat_id) {
+    return res.status(400).json({ error: 'chat_id обязателен' });
+  }
+  
+  try {
+    const testMessage = '🧪 Тестовое сообщение для проверки подключения';
+    const result = await sendTelegramMessage(chat_id, testMessage, 1);
+    
+    if (result.success) {
+      res.json({ 
+        success: true, 
+        message: 'Chat ID валиден! Сообщение успешно отправлено.',
+        chat_id: chat_id
+      });
+    } else {
+      res.status(400).json({ 
+        success: false, 
+        error: result.error,
+        errorCode: result.errorCode,
+        message: result.error === 'Bad Request: chat not found' 
+          ? 'Чат не найден. Убедитесь, что бот добавлен в группу/канал и имеет права на отправку сообщений.'
+          : result.error
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// API для получения списка доступных чатов из Telegram
+app.get('/telegram/get-chats', authenticateToken, async (req, res) => {
+  try {
+    const response = await axios.get(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates`,
+      {
+        timeout: 10000,
+        params: {
+          offset: -100, // Получаем последние 100 обновлений
+          limit: 100
+        }
+      }
+    );
+    
+    const updates = response.data.result || [];
+    const chats = [];
+    const chatIds = new Set();
+    
+    updates.forEach(update => {
+      let chat = null;
+      let chatType = '';
+      
+      if (update.message) {
+        chat = update.message.chat;
+        chatType = 'message';
+      } else if (update.channel_post) {
+        chat = update.channel_post.chat;
+        chatType = 'channel_post';
+      } else if (update.edited_message) {
+        chat = update.edited_message.chat;
+        chatType = 'edited_message';
+      }
+      
+      if (chat && chat.id && !chatIds.has(chat.id.toString())) {
+        chatIds.add(chat.id.toString());
+        chats.push({
+          id: chat.id,
+          title: chat.title || chat.first_name || chat.username || 'Без названия',
+          type: chat.type || chatType,
+          username: chat.username || null
+        });
+      }
+    });
+    
+    // Сортируем: сначала группы/каналы (отрицательные ID), потом личные чаты
+    chats.sort((a, b) => {
+      if (a.id < 0 && b.id > 0) return -1;
+      if (a.id > 0 && b.id < 0) return 1;
+      return b.id - a.id;
+    });
+    
+    res.json({ 
+      success: true, 
+      chats: chats,
+      count: chats.length,
+      message: chats.length > 0 
+        ? `Найдено ${chats.length} чат(ов). Выберите нужный chat_id.`
+        : 'Чаты не найдены. Отправьте сообщение боту в группе/канале и попробуйте снова.'
+    });
+  } catch (error) {
+    console.error('Ошибка получения чатов из Telegram:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      message: 'Не удалось получить список чатов. Проверьте токен бота.'
+    });
+  }
+});
+
 app.post('/categories', authenticateToken, (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'Название категории обязательно' });
