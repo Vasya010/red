@@ -10,6 +10,16 @@ const { Upload } = require('@aws-sdk/lib-storage');
 const axios = require('axios');
 require('dotenv').config();
 
+// Попытка загрузить sharp для оптимизации изображений (опционально)
+let sharp = null;
+try {
+  sharp = require('sharp');
+  console.log('✅ Sharp загружен - оптимизация изображений включена');
+} catch (e) {
+  console.log('⚠️ Sharp не установлен. Установите: npm install sharp');
+  console.log('⚠️ Изображения будут загружаться без оптимизации');
+}
+
 const app = express();
 
 app.use(cors());
@@ -221,19 +231,101 @@ const upload = multer({
   }
 }).single('image');
 
-// Улучшенная функция загрузки в S3 с обработкой ошибок
-function uploadToS3(file, callback) {
+// Оптимизация изображения перед загрузкой
+async function optimizeImage(buffer, mimetype) {
+  if (!sharp) {
+    // Если sharp не установлен, возвращаем оригинал
+    return buffer;
+  }
+
+  try {
+    const image = sharp(buffer);
+    const metadata = await image.metadata();
+    
+    // Определяем максимальные размеры для оптимизации
+    const maxWidth = 1200; // Максимальная ширина для товаров
+    const maxHeight = 1200; // Максимальная высота
+    
+    let optimized = image;
+    
+    // Изменяем размер, если изображение слишком большое
+    if (metadata.width > maxWidth || metadata.height > maxHeight) {
+      optimized = optimized.resize(maxWidth, maxHeight, {
+        fit: 'inside',
+        withoutEnlargement: true
+      });
+    }
+    
+    // Оптимизация в зависимости от типа изображения
+    if (mimetype === 'image/jpeg' || mimetype === 'image/jpg') {
+      return await optimized
+        .jpeg({ 
+          quality: 85, // Высокое качество, но сжатое
+          progressive: true, // Прогрессивная загрузка
+          mozjpeg: true // Используем mozjpeg для лучшего сжатия
+        })
+        .toBuffer();
+    } else if (mimetype === 'image/png') {
+      return await optimized
+        .png({ 
+          quality: 90,
+          compressionLevel: 9,
+          adaptiveFiltering: true
+        })
+        .toBuffer();
+    } else if (mimetype === 'image/webp') {
+      return await optimized
+        .webp({ 
+          quality: 85,
+          effort: 6 // Максимальное сжатие
+        })
+        .toBuffer();
+    }
+    
+    // Для других форматов возвращаем оптимизированное JPEG
+    return await optimized
+      .jpeg({ quality: 85, progressive: true })
+      .toBuffer();
+  } catch (error) {
+    console.error('⚠️ Ошибка оптимизации изображения, используем оригинал:', error.message);
+    return buffer; // Возвращаем оригинал при ошибке
+  }
+}
+
+// Улучшенная функция загрузки в S3 с оптимизацией изображений
+async function uploadToS3(file, callback) {
   try {
     if (!file || !file.buffer) {
       return callback(new Error('Файл не найден или поврежден'));
     }
     
-    const key = `pizza-images/${Date.now()}-${Math.random().toString(36).substring(7)}${path.extname(file.originalname)}`;
+    // Оптимизируем изображение перед загрузкой
+    const optimizedBuffer = await optimizeImage(file.buffer, file.mimetype);
+    const originalSize = file.buffer.length;
+    const optimizedSize = optimizedBuffer.length;
+    const compressionRatio = ((1 - optimizedSize / originalSize) * 100).toFixed(1);
+    
+    if (compressionRatio > 0) {
+      console.log(`📦 Изображение оптимизировано: ${(originalSize / 1024).toFixed(2)}KB → ${(optimizedSize / 1024).toFixed(2)}KB (${compressionRatio}% меньше)`);
+    }
+    
+    // Определяем расширение файла (предпочитаем WebP для лучшего сжатия)
+    const ext = path.extname(file.originalname).toLowerCase();
+    const useWebP = sharp && (ext === '.jpg' || ext === '.jpeg' || ext === '.png');
+    const finalExt = useWebP ? '.webp' : ext;
+    const finalMimeType = useWebP ? 'image/webp' : (file.mimetype || 'image/jpeg');
+    
+    const key = `pizza-images/${Date.now()}-${Math.random().toString(36).substring(7)}${finalExt}`;
     const params = {
       Bucket: S3_BUCKET,
       Key: key,
-      Body: file.buffer,
-      ContentType: file.mimetype || 'image/jpeg',
+      Body: optimizedBuffer,
+      ContentType: finalMimeType,
+      CacheControl: 'public, max-age=31536000', // Кэш на 1 год
+      Metadata: {
+        'original-size': originalSize.toString(),
+        'optimized-size': optimizedSize.toString()
+      }
     };
     
     const upload = new Upload({ 
@@ -245,7 +337,7 @@ function uploadToS3(file, callback) {
     
     upload.done()
       .then(() => {
-        console.log(`✅ Файл успешно загружен в S3: ${key}`);
+        console.log(`✅ Файл успешно загружен в S3: ${key} (${(optimizedSize / 1024).toFixed(2)}KB)`);
         callback(null, key);
       })
       .catch((err) => {
@@ -369,12 +461,133 @@ function optionalAuthenticateToken(req, res, next) {
   }
 }
 
+// Вспомогательная функция для конвертации stream в buffer
+function streamToBuffer(stream) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    stream.on('data', chunk => chunks.push(chunk));
+    stream.on('end', () => resolve(Buffer.concat(chunks)));
+    stream.on('error', reject);
+  });
+}
+
+// Кэш для изображений в памяти (LRU cache)
+const imageCache = new Map();
+const MAX_CACHE_SIZE = 100; // Максимум 100 изображений в кэше
+const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 часа
+
+// Функция для очистки старых записей из кэша
+function cleanImageCache() {
+  if (imageCache.size > MAX_CACHE_SIZE) {
+    const entries = Array.from(imageCache.entries());
+    // Удаляем самые старые записи
+    entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
+    const toDelete = entries.slice(0, entries.length - MAX_CACHE_SIZE);
+    toDelete.forEach(([key]) => imageCache.delete(key));
+  }
+  
+  // Удаляем устаревшие записи
+  const now = Date.now();
+  for (const [key, value] of imageCache.entries()) {
+    if (now - value.timestamp > CACHE_TTL) {
+      imageCache.delete(key);
+    }
+  }
+}
+
+// Очистка кэша каждые 6 часов
+setInterval(cleanImageCache, 6 * 60 * 60 * 1000);
+
 app.get('/product-image/:key', optionalAuthenticateToken, (req, res) => {
   const { key } = req.params;
-  getFromS3(`pizza-images/${key}`, (err, image) => {
-    if (err) return res.status(500).json({ error: `Ошибка получения изображения: ${err.message}` });
-    res.setHeader('Content-Type', image.ContentType || 'image/jpeg');
-    image.Body.pipe(res);
+  const { width, quality } = req.query;
+  
+  if (!key) {
+    return res.status(400).json({ error: 'Ключ изображения не указан' });
+  }
+  
+  const cacheKey = `${key}_${width || 'original'}_${quality || 'default'}`;
+  
+  // Проверяем кэш
+  const cached = imageCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
+    res.setHeader('Content-Type', cached.contentType);
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // Кэш на 1 год
+    res.setHeader('ETag', cached.etag);
+    res.setHeader('Last-Modified', cached.lastModified);
+    return res.send(cached.buffer);
+  }
+  
+  getFromS3(`pizza-images/${key}`, async (err, image) => {
+    if (err) {
+      console.error(`❌ Ошибка получения изображения ${key}:`, err.message);
+      return res.status(500).json({ error: `Ошибка получения изображения: ${err.message}` });
+    }
+    
+    try {
+      let imageBuffer = await streamToBuffer(image.Body);
+      let contentType = image.ContentType || 'image/jpeg';
+      let etag = image.ETag || `"${Date.now()}"`;
+      
+      // Оптимизация на лету, если запрошены параметры и установлен sharp
+      if (sharp && (width || quality)) {
+        const imageProcessor = sharp(imageBuffer);
+        
+        if (width) {
+          const widthNum = parseInt(width);
+          if (widthNum > 0 && widthNum <= 2000) {
+            imageProcessor.resize(widthNum, null, {
+              fit: 'inside',
+              withoutEnlargement: true
+            });
+          }
+        }
+        
+        const qualityNum = quality ? parseInt(quality) : 85;
+        if (contentType.includes('jpeg') || contentType.includes('jpg')) {
+          imageBuffer = await imageProcessor
+            .jpeg({ quality: qualityNum, progressive: true })
+            .toBuffer();
+        } else if (contentType.includes('png')) {
+          imageBuffer = await imageProcessor
+            .png({ quality: qualityNum })
+            .toBuffer();
+        } else if (contentType.includes('webp')) {
+          imageBuffer = await imageProcessor
+            .webp({ quality: qualityNum })
+            .toBuffer();
+          contentType = 'image/webp';
+        }
+      }
+      
+      // Сохраняем в кэш
+      if (imageCache.size < MAX_CACHE_SIZE) {
+        imageCache.set(cacheKey, {
+          buffer: imageBuffer,
+          contentType: contentType,
+          etag: etag,
+          timestamp: Date.now(),
+          lastModified: new Date().toUTCString()
+        });
+      }
+      
+      // Устанавливаем заголовки для кэширования
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // Кэш на 1 год
+      res.setHeader('ETag', etag);
+      res.setHeader('Last-Modified', new Date().toUTCString());
+      res.setHeader('Content-Length', imageBuffer.length);
+      
+      // Проверяем If-None-Match для 304 Not Modified
+      if (req.headers['if-none-match'] === etag) {
+        return res.status(304).end();
+      }
+      
+      res.send(imageBuffer);
+    } catch (error) {
+      console.error('❌ Ошибка обработки изображения:', error);
+      res.status(500).json({ error: 'Ошибка обработки изображения' });
+    }
   });
 });
 
