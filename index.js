@@ -521,13 +521,20 @@ app.get('/product-image/:key', optionalAuthenticateToken, (req, res) => {
   getFromS3(`pizza-images/${key}`, async (err, image) => {
     if (err) {
       console.error(`❌ Ошибка получения изображения ${key}:`, err.message);
-      return res.status(500).json({ error: `Ошибка получения изображения: ${err.message}` });
+      return res.status(404).json({ error: `Изображение не найдено: ${err.message}` });
     }
     
     try {
       let imageBuffer = await streamToBuffer(image.Body);
       let contentType = image.ContentType || 'image/jpeg';
       let etag = image.ETag || `"${Date.now()}"`;
+      
+      // Проверяем If-None-Match для 304 Not Modified (до обработки)
+      if (req.headers['if-none-match'] === etag) {
+        res.setHeader('ETag', etag);
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return res.status(304).end();
+      }
       
       // Оптимизация на лету, если запрошены параметры и установлен sharp
       if (sharp && (width || quality)) {
@@ -546,11 +553,11 @@ app.get('/product-image/:key', optionalAuthenticateToken, (req, res) => {
         const qualityNum = quality ? parseInt(quality) : 85;
         if (contentType.includes('jpeg') || contentType.includes('jpg')) {
           imageBuffer = await imageProcessor
-            .jpeg({ quality: qualityNum, progressive: true })
+            .jpeg({ quality: qualityNum, progressive: true, mozjpeg: true })
             .toBuffer();
         } else if (contentType.includes('png')) {
           imageBuffer = await imageProcessor
-            .png({ quality: qualityNum })
+            .png({ quality: qualityNum, compressionLevel: 9 })
             .toBuffer();
         } else if (contentType.includes('webp')) {
           imageBuffer = await imageProcessor
@@ -571,17 +578,13 @@ app.get('/product-image/:key', optionalAuthenticateToken, (req, res) => {
         });
       }
       
-      // Устанавливаем заголовки для кэширования
+      // Устанавливаем заголовки для кэширования и оптимизации
       res.setHeader('Content-Type', contentType);
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // Кэш на 1 год
       res.setHeader('ETag', etag);
       res.setHeader('Last-Modified', new Date().toUTCString());
       res.setHeader('Content-Length', imageBuffer.length);
-      
-      // Проверяем If-None-Match для 304 Not Modified
-      if (req.headers['if-none-match'] === etag) {
-        return res.status(304).end();
-      }
+      res.setHeader('Accept-Ranges', 'bytes');
       
       res.send(imageBuffer);
     } catch (error) {
@@ -1759,10 +1762,11 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
     const total = cartItems.reduce((sum, item) => sum + (Number(item.originalPrice) || 0) * item.quantity, 0);
     const discountedTotal = total * (1 - (discount || 0) / 100);
     
-    // Временно отключаем использование и начисление кешбэка
+    // Использование кешбэка временно отключено
     const cashbackUsedAmount = 0;
-    const cashbackEarned = 0;
+    // Начисление кешбэка 2% от итоговой суммы заказа
     const finalTotal = Math.max(0, discountedTotal);
+    const cashbackEarned = userId && userPhone ? Math.round(finalTotal * 0.02 * 100) / 100 : 0;
     
     const escapeMarkdown = (text) => (text ? text.replace(/([_*[\]()~`>#+-.!])/g, '\\$1') : 'Нет');
     const paymentMethodText = paymentMethod === 'cash' ? 'Наличными' : paymentMethod === 'card' ? 'Картой' : 'Не указан';
@@ -1772,7 +1776,11 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
       const userPhone = userData.phone;
       const userCode = userData.userCode;
       
-      // Кешбэк временно не обрабатываем
+      // Вычисляем кешбэк 2% от итоговой суммы
+      const finalTotal = Math.max(0, discountedTotal);
+      const cashbackEarned = userId && userPhone ? Math.round(finalTotal * 0.02 * 100) / 100 : 0;
+      
+      // Кешбэк будет обработан после создания заказа
       const processCashback = (callback) => callback();
     
     db.query(
@@ -1800,11 +1808,39 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
         
         console.log(`📦 [${timestamp}] Новый заказ создан: ID ${orderId}, Филиал: ${branchName}, Сумма: ${finalTotal} сом, Телефон: ${phone}`);
         
+        // Начисляем кешбэк 2% от суммы заказа
+        const cashbackEarned = userId && userPhone ? Math.round(finalTotal * 0.02 * 100) / 100 : 0;
+        if (cashbackEarned > 0) {
+          db.query(
+            `INSERT INTO cashback_balance (phone, balance, total_earned, total_orders, user_level)
+             VALUES (?, ?, ?, 1, 'bronze')
+             ON DUPLICATE KEY UPDATE
+             balance = balance + ?,
+             total_earned = total_earned + ?,
+             total_orders = total_orders + 1`,
+            [userPhone, cashbackEarned, cashbackEarned, cashbackEarned, cashbackEarned],
+            (err) => {
+              if (err) {
+                console.error(`❌ [${timestamp}] Ошибка начисления кешбэка для ${userPhone}:`, err.message);
+              } else {
+                // Записываем транзакцию
+                db.query(
+                  'INSERT INTO cashback_transactions (phone, order_id, type, amount, description) VALUES (?, ?, "earned", ?, ?)',
+                  [userPhone, orderId, cashbackEarned, `Кешбэк за заказ #${orderId} (2%)`],
+                  () => {}
+                );
+                console.log(`💰 [${timestamp}] Начислен кешбэк ${cashbackEarned.toFixed(2)} сом пользователю ${userPhone} за заказ #${orderId}`);
+              }
+            }
+          );
+        }
+        
         // СРАЗУ возвращаем ответ клиенту (не ждем Telegram)
         res.status(200).json({ 
           message: 'Заказ успешно отправлен', 
           orderId: orderId,
-          cashbackEarned: cashbackEarned
+          cashbackEarned: cashbackEarned,
+          total: finalTotal
         });
         
         // Формируем текст заказа с номером заказа
@@ -5266,6 +5302,18 @@ app.delete('/product-promo-codes/:id', authenticateToken, (req, res) => {
 });
 
 // ========== НОВОСТИ ==========
+// Публичный эндпоинт для получения новостей
+app.get('/api/public/news', (req, res) => {
+  db.query('SELECT * FROM news ORDER BY created_at DESC', (err, news) => {
+    if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+    const newsWithUrls = news.map(item => ({
+      ...item,
+      image: item.image ? `https://vasya010-red-bdf5.twc1.net/product-image/${item.image.split('/').pop()}` : null
+    }));
+    res.json(newsWithUrls);
+  });
+});
+
 app.get('/news', authenticateToken, (req, res) => {
   db.query('SELECT * FROM news ORDER BY created_at DESC', (err, news) => {
     if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
@@ -5435,6 +5483,24 @@ function sendPromotionNotifications(promotion, callback) {
     });
   });
 }
+
+// Публичный эндпоинт для получения акций
+app.get('/api/public/promotions', (req, res) => {
+  db.query(`
+    SELECT p.*, pc.code as promo_code, pc.discount_percent
+    FROM promotions p
+    LEFT JOIN promo_codes pc ON p.promo_code_id = pc.id
+    WHERE pc.is_active = TRUE OR pc.id IS NULL
+    ORDER BY p.created_at DESC
+  `, (err, promotions) => {
+    if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+    const promotionsWithUrls = promotions.map(item => ({
+      ...item,
+      image: item.image ? `https://vasya010-red-bdf5.twc1.net/product-image/${item.image.split('/').pop()}` : null
+    }));
+    res.json(promotionsWithUrls);
+  });
+});
 
 app.get('/promotions', authenticateToken, (req, res) => {
   db.query(`
