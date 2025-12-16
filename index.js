@@ -1805,31 +1805,37 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
         
         console.log(`📦 [${timestamp}] Новый заказ создан: ID ${orderId}, Филиал: ${branchName}, Сумма: ${finalTotal} сом, Телефон: ${phone}`);
         
-        // Списываем использованный кешбэк
-        if (cashbackUsedAmount > 0 && userId && userPhone) {
+        // Списываем использованный кешбэк (только для авторизованных пользователей)
+        if (cashbackUsedAmount > 0 && userPhone) {
           db.query(
             `UPDATE cashback_balance 
              SET balance = balance - ?, total_spent = total_spent + ?
              WHERE phone = ? AND balance >= ?`,
             [cashbackUsedAmount, cashbackUsedAmount, userPhone, cashbackUsedAmount],
-            (err) => {
+            (err, result) => {
               if (err) {
                 console.error(`❌ [${timestamp}] Ошибка списания кешбэка для ${userPhone}:`, err.message);
-              } else {
+              } else if (result.affectedRows > 0) {
                 // Записываем транзакцию списания
                 db.query(
                   'INSERT INTO cashback_transactions (phone, order_id, type, amount, description) VALUES (?, ?, "spent", ?, ?)',
                   [userPhone, orderId, cashbackUsedAmount, `Использован кешбэк для заказа #${orderId}`],
-                  () => {}
+                  (err) => {
+                    if (err) {
+                      console.error(`❌ [${timestamp}] Ошибка записи транзакции списания:`, err.message);
+                    }
+                  }
                 );
                 console.log(`💸 [${timestamp}] Списано ${cashbackUsedAmount.toFixed(2)} сом кешбэка пользователю ${userPhone} за заказ #${orderId}`);
+              } else {
+                console.warn(`⚠️ [${timestamp}] Недостаточно кешбэка для списания у пользователя ${userPhone}`);
               }
             }
           );
         }
         
-        // Начисляем кешбэк 2% от суммы заказа (после списания)
-        if (cashbackEarned > 0) {
+        // Начисляем кешбэк 2% от суммы заказа (только для авторизованных пользователей)
+        if (cashbackEarned > 0 && userPhone) {
           db.query(
             `INSERT INTO cashback_balance (phone, balance, total_earned, total_orders, user_level)
              VALUES (?, ?, ?, 1, 'bronze')
@@ -1842,11 +1848,15 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
               if (err) {
                 console.error(`❌ [${timestamp}] Ошибка начисления кешбэка для ${userPhone}:`, err.message);
               } else {
-                // Записываем транзакцию
+                // Записываем транзакцию начисления
                 db.query(
                   'INSERT INTO cashback_transactions (phone, order_id, type, amount, description) VALUES (?, ?, "earned", ?, ?)',
                   [userPhone, orderId, cashbackEarned, `Кешбэк за заказ #${orderId} (2%)`],
-                  () => {}
+                  (err) => {
+                    if (err) {
+                      console.error(`❌ [${timestamp}] Ошибка записи транзакции начисления:`, err.message);
+                    }
+                  }
                 );
                 console.log(`💰 [${timestamp}] Начислен кешбэк ${cashbackEarned.toFixed(2)} сом пользователю ${userPhone} за заказ #${orderId}`);
               }
@@ -1859,6 +1869,7 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
           message: 'Заказ успешно отправлен', 
           orderId: orderId,
           cashbackEarned: cashbackEarned,
+          cashbackUsed: cashbackUsedAmount,
           total: finalTotal
         });
         
