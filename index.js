@@ -1762,7 +1762,10 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
     const total = cartItems.reduce((sum, item) => sum + (Number(item.originalPrice) || 0) * item.quantity, 0);
     const discountedTotal = total * (1 - (discount || 0) / 100);
     
-    // Получаем данные пользователя для обработки кешбэка
+    const escapeMarkdown = (text) => (text ? text.replace(/([_*[\]()~`>#+-.!])/g, '\\$1') : 'Нет');
+    const paymentMethodText = paymentMethod === 'cash' ? 'Наличными' : paymentMethod === 'card' ? 'Картой' : 'Не указан';
+    
+    // Получаем данные пользователя и обрабатываем заказ
     getUserData((userData) => {
       const userPhone = userData.phone;
       const userCode = userData.userCode;
@@ -1772,18 +1775,6 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
       let finalTotal = Math.max(0, discountedTotal - cashbackUsedAmount);
       
       // Начисление кешбэка 2% от итоговой суммы заказа (после списания)
-      const cashbackEarned = userId && userPhone ? Math.round(finalTotal * 0.02 * 100) / 100 : 0;
-    
-    const escapeMarkdown = (text) => (text ? text.replace(/([_*[\]()~`>#+-.!])/g, '\\$1') : 'Нет');
-    const paymentMethodText = paymentMethod === 'cash' ? 'Наличными' : paymentMethod === 'card' ? 'Картой' : 'Не указан';
-    
-    // Получаем данные пользователя и обрабатываем заказ
-    getUserData((userData) => {
-      const userPhone = userData.phone;
-      const userCode = userData.userCode;
-      
-      // Вычисляем кешбэк 2% от итоговой суммы
-      const finalTotal = Math.max(0, discountedTotal);
       const cashbackEarned = userId && userPhone ? Math.round(finalTotal * 0.02 * 100) / 100 : 0;
       
       // Кешбэк будет обработан после создания заказа
@@ -1814,8 +1805,30 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
         
         console.log(`📦 [${timestamp}] Новый заказ создан: ID ${orderId}, Филиал: ${branchName}, Сумма: ${finalTotal} сом, Телефон: ${phone}`);
         
-        // Начисляем кешбэк 2% от суммы заказа
-        const cashbackEarned = userId && userPhone ? Math.round(finalTotal * 0.02 * 100) / 100 : 0;
+        // Списываем использованный кешбэк
+        if (cashbackUsedAmount > 0 && userId && userPhone) {
+          db.query(
+            `UPDATE cashback_balance 
+             SET balance = balance - ?, total_spent = total_spent + ?
+             WHERE phone = ? AND balance >= ?`,
+            [cashbackUsedAmount, cashbackUsedAmount, userPhone, cashbackUsedAmount],
+            (err) => {
+              if (err) {
+                console.error(`❌ [${timestamp}] Ошибка списания кешбэка для ${userPhone}:`, err.message);
+              } else {
+                // Записываем транзакцию списания
+                db.query(
+                  'INSERT INTO cashback_transactions (phone, order_id, type, amount, description) VALUES (?, ?, "spent", ?, ?)',
+                  [userPhone, orderId, cashbackUsedAmount, `Использован кешбэк для заказа #${orderId}`],
+                  () => {}
+                );
+                console.log(`💸 [${timestamp}] Списано ${cashbackUsedAmount.toFixed(2)} сом кешбэка пользователю ${userPhone} за заказ #${orderId}`);
+              }
+            }
+          );
+        }
+        
+        // Начисляем кешбэк 2% от суммы заказа (после списания)
         if (cashbackEarned > 0) {
           db.query(
             `INSERT INTO cashback_balance (phone, balance, total_earned, total_orders, user_level)
