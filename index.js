@@ -1762,11 +1762,17 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
     const total = cartItems.reduce((sum, item) => sum + (Number(item.originalPrice) || 0) * item.quantity, 0);
     const discountedTotal = total * (1 - (discount || 0) / 100);
     
-    // Использование кешбэка временно отключено
-    const cashbackUsedAmount = 0;
-    // Начисление кешбэка 2% от итоговой суммы заказа
-    const finalTotal = Math.max(0, discountedTotal);
-    const cashbackEarned = userId && userPhone ? Math.round(finalTotal * 0.02 * 100) / 100 : 0;
+    // Получаем данные пользователя для обработки кешбэка
+    getUserData((userData) => {
+      const userPhone = userData.phone;
+      const userCode = userData.userCode;
+      
+      // Использование кешбэка
+      const cashbackUsedAmount = Math.min(parseFloat(cashbackUsed || 0), discountedTotal);
+      let finalTotal = Math.max(0, discountedTotal - cashbackUsedAmount);
+      
+      // Начисление кешбэка 2% от итоговой суммы заказа (после списания)
+      const cashbackEarned = userId && userPhone ? Math.round(finalTotal * 0.02 * 100) / 100 : 0;
     
     const escapeMarkdown = (text) => (text ? text.replace(/([_*[\]()~`>#+-.!])/g, '\\$1') : 'Нет');
     const paymentMethodText = paymentMethod === 'cash' ? 'Наличными' : paymentMethod === 'card' ? 'Картой' : 'Не указан';
