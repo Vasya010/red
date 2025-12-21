@@ -1712,14 +1712,45 @@ app.get('/api/public/banners', (req, res) => {
 
 app.post('/api/public/validate-promo', (req, res) => {
   const { promoCode } = req.body;
+  
+  // Валидация входных данных
+  if (!promoCode) {
+    return res.status(400).json({ error: 'Промокод не указан' });
+  }
+  
+  if (typeof promoCode !== 'string' || promoCode.trim().length === 0) {
+    return res.status(400).json({ error: 'Промокод должен быть непустой строкой' });
+  }
+  
+  const cleanPromoCode = promoCode.trim().toUpperCase();
+  
   db.query(`
-    SELECT discount_percent AS discount
+    SELECT discount_percent AS discount, code, expires_at, is_active
     FROM promo_codes
-    WHERE code = ? AND is_active = TRUE AND (expires_at IS NULL OR expires_at > NOW())
-  `, [promoCode], (err, promo) => {
-    if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
-    if (promo.length === 0) return res.status(400).json({ error: 'Промокод недействителен' });
-    res.json({ discount: promo[0].discount });
+    WHERE code = ?
+  `, [cleanPromoCode], (err, promo) => {
+    if (err) {
+      console.error('Ошибка проверки промокода:', err);
+      return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+    }
+    
+    if (promo.length === 0) {
+      return res.status(400).json({ error: 'Промокод не найден' });
+    }
+    
+    const promoData = promo[0];
+    
+    // Проверка активности
+    if (!promoData.is_active) {
+      return res.status(400).json({ error: 'Промокод неактивен' });
+    }
+    
+    // Проверка срока действия
+    if (promoData.expires_at && new Date(promoData.expires_at) < new Date()) {
+      return res.status(400).json({ error: 'Промокод истек' });
+    }
+    
+    res.json({ discount: promoData.discount });
   });
 });
 
@@ -3621,10 +3652,27 @@ app.get('/products', authenticateToken, (req, res) => {
     GROUP BY p.id
   `, (err, products) => {
     if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
-    const parsedProducts = products.map(product => ({
-      ...product,
-      sauces: product.sauces ? JSON.parse(product.sauces).filter(s => s && s.id) : []
-    }));
+    const parsedProducts = products.map(product => {
+      let imageUrl = null;
+      if (product.image) {
+        // Если это уже полный URL, используем его
+        if (product.image.startsWith('http')) {
+          imageUrl = product.image;
+        } else {
+          // Извлекаем ключ изображения (убираем путь, если есть)
+          const imageKey = product.image.includes('/') 
+            ? product.image.split('/').pop() 
+            : product.image;
+          imageUrl = `https://vasya010-red-bdf5.twc1.net/product-image/${imageKey}`;
+        }
+      }
+      return {
+        ...product,
+        image: imageUrl,
+        image_url: imageUrl,
+        sauces: product.sauces ? JSON.parse(product.sauces).filter(s => s && s.id) : []
+      };
+    });
     res.json(parsedProducts);
   });
 });
@@ -5275,6 +5323,14 @@ app.post('/login', (req, res) => {
 
 app.get('/users', authenticateToken, (req, res) => {
   db.query('SELECT id, name, email FROM users', (err, users) => {
+    if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+    res.json(users);
+  });
+});
+
+// API для получения всех пользователей приложения (app_users)
+app.get('/app-users', authenticateToken, (req, res) => {
+  db.query('SELECT id, phone, name, user_code, address, created_at, referrer_id FROM app_users ORDER BY created_at DESC', (err, users) => {
     if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
     res.json(users);
   });
