@@ -22,15 +22,27 @@ try {
 
 const app = express();
 
-app.use(cors({
+// CORS конфигурация
+const corsOptions = {
   origin: [
     'https://boodaipizza.com',
     'https://www.boodaipizza.com',
     'http://localhost:3000',
     'http://localhost:3001'
   ],
-  credentials: true
-}));
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204
+};
+
+app.use(cors(corsOptions));
+
+// Явная обработка OPTIONS запросов для всех маршрутов
+app.options('*', cors(corsOptions));
+
 app.use(express.json());
 
 // Middleware для логирования всех запросов (после парсинга body)
