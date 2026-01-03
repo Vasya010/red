@@ -22,7 +22,15 @@ try {
 
 const app = express();
 
-app.use(cors());
+app.use(cors({
+  origin: [
+    'https://boodaipizza.com',
+    'https://www.boodaipizza.com',
+    'http://localhost:3000',
+    'http://localhost:3001'
+  ],
+  credentials: true
+}));
 app.use(express.json());
 
 // Middleware для логирования всех запросов (после парсинга body)
