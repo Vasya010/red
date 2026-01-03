@@ -111,7 +111,7 @@ if (!TELEGRAM_BOT_TOKEN) {
 }
 const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY || 'GIMZKRMOGP4F0MOTLVCE';
 const S3_SECRET_KEY = process.env.S3_SECRET_KEY || 'WvhFfIzzCkITUrXfD8JfoDne7LmBhnNzDuDBj89I';
-const MYSQL_HOST = process.env.MYSQL_HOST || 'vh438.timeweb.ru';
+const MYSQL_HOST = process.env.MYSQL_HOST || 'vh426.timeweb.ru';
 const MYSQL_USER = process.env.MYSQL_USER || 'ch79145_pizza';
 const MYSQL_PASSWORD = process.env.MYSQL_PASSWORD || 'Vasya11091109';
 const MYSQL_DATABASE = process.env.MYSQL_DATABASE || 'ch79145_pizza';
