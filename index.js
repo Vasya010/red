@@ -775,6 +775,48 @@ function initializeServer(callback) {
               } else {
                 checkProductAlterations();
               }
+              // Добавляем поля размеров для пицц
+              let sizeAlterations = 0;
+              const checkSizeAlterations = () => {
+                sizeAlterations++;
+                if (sizeAlterations === 3) {
+                  productAlterations++;
+                  if (productAlterations === 3) createSubcategoriesTable();
+                }
+              };
+              if (!columns.includes('size_small')) {
+                connection.query('ALTER TABLE products ADD COLUMN size_small INT DEFAULT NULL', (err) => {
+                  if (err) {
+                    connection.release();
+                    return callback(err);
+                  }
+                  checkSizeAlterations();
+                });
+              } else {
+                checkSizeAlterations();
+              }
+              if (!columns.includes('size_medium')) {
+                connection.query('ALTER TABLE products ADD COLUMN size_medium INT DEFAULT NULL', (err) => {
+                  if (err) {
+                    connection.release();
+                    return callback(err);
+                  }
+                  checkSizeAlterations();
+                });
+              } else {
+                checkSizeAlterations();
+              }
+              if (!columns.includes('size_large')) {
+                connection.query('ALTER TABLE products ADD COLUMN size_large INT DEFAULT NULL', (err) => {
+                  if (err) {
+                    connection.release();
+                    return callback(err);
+                  }
+                  checkSizeAlterations();
+                });
+              } else {
+                checkSizeAlterations();
+              }
             });
           });
         }
@@ -1324,7 +1366,8 @@ app.get('/api/public/branches/:branchId/products', (req, res) => {
   
   db.query(`
     SELECT p.id, p.name, p.description, p.price_small, p.price_medium, p.price_large,
-           p.price_single AS price, p.image AS image_url, c.name AS category,
+           p.price_single AS price, p.size_small, p.size_medium, p.size_large,
+           p.image AS image_url, c.name AS category,
            d.discount_percent, d.expires_at,
            COALESCE(
              (SELECT JSON_ARRAYAGG(
@@ -4670,7 +4713,7 @@ app.post('/products', authenticateToken, (req, res) => {
     if (err) {
       return handleUploadError(err, req, res, () => {});
     }
-    const { name, description, priceSmall, priceMedium, priceLarge, priceSingle, branchId, categoryId, subCategoryId, sauceIds } = req.body;
+    const { name, description, priceSmall, priceMedium, priceLarge, priceSingle, sizeSmall, sizeMedium, sizeLarge, branchId, categoryId, subCategoryId, sauceIds } = req.body;
     if (!req.file) return res.status(400).json({ error: 'Изображение обязательно' });
     uploadToS3(req.file, (err, imageKey) => {
       if (err) {
@@ -4683,8 +4726,9 @@ app.post('/products', authenticateToken, (req, res) => {
       db.query(
         `INSERT INTO products (
           name, description, price_small, price_medium, price_large, price_single,
+          size_small, size_medium, size_large,
           branch_id, category_id, sub_category_id, image
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           name,
           description || null,
@@ -4692,6 +4736,9 @@ app.post('/products', authenticateToken, (req, res) => {
           priceMedium ? parseFloat(priceMedium) : null,
           priceLarge ? parseFloat(priceLarge) : null,
           priceSingle ? parseFloat(priceSingle) : null,
+          sizeSmall ? parseInt(sizeSmall) : null,
+          sizeMedium ? parseInt(sizeMedium) : null,
+          sizeLarge ? parseInt(sizeLarge) : null,
           branchId,
           categoryId,
           subCategoryId || null,
@@ -4781,7 +4828,7 @@ app.put('/products/:id', authenticateToken, (req, res) => {
       return handleUploadError(err, req, res, () => {});
     }
     const { id } = req.params;
-    const { name, description, priceSmall, priceMedium, priceLarge, priceSingle, branchId, categoryId, subCategoryId, sauceIds } = req.body;
+    const { name, description, priceSmall, priceMedium, priceLarge, priceSingle, sizeSmall, sizeMedium, sizeLarge, branchId, categoryId, subCategoryId, sauceIds } = req.body;
     let imageKey;
     db.query('SELECT image FROM products WHERE id = ?', [id], (err, existing) => {
       if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
@@ -4804,7 +4851,8 @@ app.put('/products/:id', authenticateToken, (req, res) => {
         db.query(
           `UPDATE products SET
             name = ?, description = ?, price_small = ?, price_medium = ?, price_large = ?,
-            price_single = ?, branch_id = ?, category_id = ?, sub_category_id = ?, image = ?
+            price_single = ?, size_small = ?, size_medium = ?, size_large = ?,
+            branch_id = ?, category_id = ?, sub_category_id = ?, image = ?
           WHERE id = ?`,
           [
             name,
@@ -4813,6 +4861,9 @@ app.put('/products/:id', authenticateToken, (req, res) => {
             priceMedium ? parseFloat(priceMedium) : null,
             priceLarge ? parseFloat(priceLarge) : null,
             priceSingle ? parseFloat(priceSingle) : null,
+            sizeSmall ? parseInt(sizeSmall) : null,
+            sizeMedium ? parseInt(sizeMedium) : null,
+            sizeLarge ? parseInt(sizeLarge) : null,
             branchId,
             categoryId,
             subCategoryId || null,
