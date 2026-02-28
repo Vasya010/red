@@ -1855,7 +1855,7 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
     const discountedTotal = total * (1 - (discount || 0) / 100);
     
     const escapeMarkdown = (text) => (text ? text.replace(/([_*[\]()~`>#+-.!])/g, '\\$1') : 'Нет');
-    const paymentMethodText = paymentMethod === 'cash' ? 'Наличными' : paymentMethod === 'card' ? 'Картой' : 'Не указан';
+    const paymentMethodText = paymentMethod === 'cash' ? 'Наличными' : paymentMethod === 'card' ? 'Картой' : paymentMethod === 'qr' ? 'QR code' : 'Не указан';
     
     // Получаем данные пользователя и обрабатываем заказ
     getUserData((userData) => {
@@ -2110,7 +2110,7 @@ app.post('/api/public/sync-offline-orders', optionalAuthenticateToken, (req, res
       const finalTotal = Math.max(0, discountedTotal - cashbackUsedAmount);
 
       const escapeMarkdown = (text) => (text ? text.replace(/([_*[\]()~`>#+-.!])/g, '\\$1') : 'Нет');
-      const paymentMethodText = paymentMethod === 'cash' ? 'Наличными' : paymentMethod === 'card' ? 'Картой' : 'Не указан';
+      const paymentMethodText = paymentMethod === 'cash' ? 'Наличными' : paymentMethod === 'card' ? 'Картой' : paymentMethod === 'qr' ? 'QR code' : 'Не указан';
       
       const orderText = `
 📦 *Новый заказ (офлайн):*
@@ -2166,6 +2166,7 @@ ${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${fmt(cashbackEarned
 🏪 Филиал: ${escapeMarkdown(branchName)}
 👤 Имя: ${escapeMarkdown(orderDetails?.name || deliveryDetails?.name || "Не указано")}
 📞 Телефон: ${escapeMarkdown(phone || "Не указан")}
+📝 Комментарии: ${escapeMarkdown(orderDetails?.comments || deliveryDetails?.comments || "Нет")}
 📍 Адрес доставки: ${escapeMarkdown(deliveryDetails?.address || "Самовывоз")}
 💳 Способ оплаты: ${escapeMarkdown(paymentMethodText)}
 
