@@ -165,6 +165,9 @@ async function sendTelegramMessage(chatId, text, maxRetries = 2) {
   }
 }
 
+// Форматирование суммы для Telegram (всегда два знака, без NaN/undefined → "0.00")
+function fmt(n) { return (Number(n) || 0).toFixed(2); }
+
 // Функция для неблокирующей отправки в Telegram (fire and forget)
 function sendTelegramMessageAsync(chatId, text, branchName = '') {
   // Запускаем асинхронно, не ждем результата
@@ -737,10 +740,13 @@ function initializeServer(callback) {
                 return callback(err);
               }
               const columns = productColumns.map(col => col.Field);
-              let productAlterations = 0;
-              const checkProductAlterations = () => {
-                productAlterations++;
-                if (productAlterations === 3) createSubcategoriesTable();
+              let totalChecks = 0;
+              const totalNeeded = 6; // 3 для product + 3 для size
+              const checkAllDone = () => {
+                totalChecks++;
+                if (totalChecks === totalNeeded) {
+                  createSubcategoriesTable();
+                }
               };
               if (!columns.includes('mini_recipe')) {
                 connection.query('ALTER TABLE products ADD COLUMN mini_recipe TEXT', (err) => {
@@ -748,10 +754,10 @@ function initializeServer(callback) {
                     connection.release();
                     return callback(err);
                   }
-                  checkProductAlterations();
+                  checkAllDone();
                 });
               } else {
-                checkProductAlterations();
+                checkAllDone();
               }
               if (!columns.includes('sub_category_id')) {
                 connection.query('ALTER TABLE products ADD COLUMN sub_category_id INT', (err) => {
@@ -759,10 +765,10 @@ function initializeServer(callback) {
                     connection.release();
                     return callback(err);
                   }
-                  checkProductAlterations();
+                  checkAllDone();
                 });
               } else {
-                checkProductAlterations();
+                checkAllDone();
               }
               if (!columns.includes('is_pizza')) {
                 connection.query('ALTER TABLE products ADD COLUMN is_pizza BOOLEAN DEFAULT FALSE', (err) => {
@@ -770,20 +776,23 @@ function initializeServer(callback) {
                     connection.release();
                     return callback(err);
                   }
-                  checkProductAlterations();
+                  checkAllDone();
                 });
               } else {
-                checkProductAlterations();
+                checkAllDone();
               }
               // Добавляем поля размеров для пицц
-              let sizeAlterations = 0;
-              const checkSizeAlterations = () => {
-                sizeAlterations++;
-                if (sizeAlterations === 3) {
-                  productAlterations++;
-                  if (productAlterations === 3) createSubcategoriesTable();
-                }
-              };
+              if (!columns.includes('size_small')) {
+                connection.query('ALTER TABLE products ADD COLUMN size_small INT DEFAULT NULL', (err) => {
+                  if (err) {
+                    connection.release();
+                    return callback(err);
+                  }
+                  checkAllDone();
+                });
+              } else {
+                checkAllDone();
+              }
               if (!columns.includes('size_small')) {
                 connection.query('ALTER TABLE products ADD COLUMN size_small INT DEFAULT NULL', (err) => {
                   if (err) {
@@ -801,10 +810,10 @@ function initializeServer(callback) {
                     connection.release();
                     return callback(err);
                   }
-                  checkSizeAlterations();
+                  checkAllDone();
                 });
               } else {
-                checkSizeAlterations();
+                checkAllDone();
               }
               if (!columns.includes('size_large')) {
                 connection.query('ALTER TABLE products ADD COLUMN size_large INT DEFAULT NULL', (err) => {
@@ -812,10 +821,10 @@ function initializeServer(callback) {
                     connection.release();
                     return callback(err);
                   }
-                  checkSizeAlterations();
+                  checkAllDone();
                 });
               } else {
-                checkSizeAlterations();
+                checkAllDone();
               }
             });
           });
@@ -1833,7 +1842,7 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
       });
     }
     
-    const total = cartItems.reduce((sum, item) => sum + (Number(item.originalPrice) || 0) * item.quantity, 0);
+    const total = cartItems.reduce((sum, item) => sum + (Number(item.originalPrice ?? item.price) || 0) * (item.quantity || 0), 0);
     const discountedTotal = total * (1 - (discount || 0) / 100);
     
     const escapeMarkdown = (text) => (text ? text.replace(/([_*[\]()~`>#+-.!])/g, '\\$1') : 'Нет');
@@ -1961,14 +1970,14 @@ app.post('/api/public/send-order', optionalAuthenticateToken, (req, res) => {
 💳 Способ оплаты: ${escapeMarkdown(paymentMethodText)}
 
 🛒 *Товары:*
-${cartItems.map((item) => `• ${escapeMarkdown(item.name)} × ${item.quantity} шт. = ${((item.originalPrice || 0) * item.quantity).toFixed(2)} сом`).join('\n')}
+${cartItems.map((item) => `• ${escapeMarkdown(item.name)} × ${item.quantity} шт. = ${fmt((Number(item.originalPrice ?? item.price) || 0) * item.quantity)} сом`).join('\n')}
 
-💰 Сумма товаров: ${total.toFixed(2)} сом
-${discount > 0 ? `💸 Скидка (${discount}%): -${(total * discount / 100).toFixed(2)} сом` : ''}
-${cashbackUsedAmount > 0 ? `🎁 Кешбэк использован: -${cashbackUsedAmount.toFixed(2)} сом` : ''}
-${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${cashbackEarned.toFixed(2)} сом` : ''}
+💰 Сумма товаров: ${fmt(total)} сом
+${discount > 0 ? `💸 Скидка (${discount}%): -${fmt(total * discount / 100)} сом` : ''}
+${cashbackUsedAmount > 0 ? `🎁 Кешбэк использован: -${fmt(cashbackUsedAmount)} сом` : ''}
+${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${fmt(cashbackEarned)} сом` : ''}
 
-💰 *ИТОГО: ${finalTotal.toFixed(2)} сом*
+💰 *ИТОГО: ${fmt(finalTotal)} сом*
 
 ⏰ ${new Date().toLocaleString('ru-RU', { 
   day: '2-digit', 
@@ -2085,7 +2094,7 @@ app.post('/api/public/sync-offline-orders', optionalAuthenticateToken, (req, res
         return;
       }
 
-      const total = cartItems.reduce((sum, item) => sum + (Number(item.originalPrice) || 0) * item.quantity, 0);
+      const total = cartItems.reduce((sum, item) => sum + (Number(item.originalPrice ?? item.price) || 0) * (item.quantity || 0), 0);
       const discountedTotal = total * (1 - (discount || 0) / 100);
       const cashbackUsedAmount = userId ? (Number(cashbackUsed) || 0) : 0;
       const cashbackEarned = userId ? Math.round(discountedTotal * 0.07) : 0;
@@ -2103,12 +2112,12 @@ app.post('/api/public/sync-offline-orders', optionalAuthenticateToken, (req, res
 📍 Адрес доставки: ${escapeMarkdown(deliveryDetails?.address || "Самовывоз")}
 💳 Способ оплаты: ${escapeMarkdown(paymentMethodText)}
 🛒 *Товары:*
-${cartItems.map((item) => `- ${escapeMarkdown(item.name)} (${item.quantity} шт. по ${item.originalPrice} сом)`).join('\n')}
-💰 Сумма товаров: ${total.toFixed(2)} сом
-${discount > 0 ? `💸 Скидка (${discount}%): -${(total * discount / 100).toFixed(2)} сом` : ''}
-${cashbackUsedAmount > 0 ? `🎁 Кешбэк использован: -${cashbackUsedAmount.toFixed(2)} сом` : ''}
-${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${cashbackEarned.toFixed(2)} сом` : ''}
-💰 *Итоговая сумма: ${finalTotal.toFixed(2)} сом*
+${cartItems.map((item) => `- ${escapeMarkdown(item.name)} (${item.quantity} шт. по ${item.originalPrice ?? item.price ?? 0} сом)`).join('\n')}
+💰 Сумма товаров: ${fmt(total)} сом
+${discount > 0 ? `💸 Скидка (${discount}%): -${fmt(total * discount / 100)} сом` : ''}
+${cashbackUsedAmount > 0 ? `🎁 Кешбэк использован: -${fmt(cashbackUsedAmount)} сом` : ''}
+${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${fmt(cashbackEarned)} сом` : ''}
+💰 *Итоговая сумма: ${fmt(finalTotal)} сом*
       `;
 
       db.query(
@@ -2152,9 +2161,9 @@ ${cashbackEarned > 0 ? `✨ Кешбэк начислен: +${cashbackEarned.toF
 💳 Способ оплаты: ${escapeMarkdown(paymentMethodText)}
 
 🛒 *Товары:*
-${cartItems.map((item) => `• ${escapeMarkdown(item.name)} × ${item.quantity} шт. = ${((item.originalPrice || item.price || 0) * item.quantity).toFixed(2)} сом`).join('\n')}
+${cartItems.map((item) => `• ${escapeMarkdown(item.name)} × ${item.quantity} шт. = ${fmt((Number(item.originalPrice ?? item.price) || 0) * item.quantity)} сом`).join('\n')}
 
-💰 *ИТОГО: ${finalTotal.toFixed(2)} сом*
+💰 *ИТОГО: ${fmt(finalTotal)} сом*
 
 ⏰ ${new Date().toLocaleString('ru-RU', { 
   day: '2-digit', 
@@ -3795,6 +3804,38 @@ app.get('/promo-codes/check/:code', authenticateToken, (req, res) => {
   });
 });
 
+// Список заказов, использовавших промокод (для админки: кто использовал промокод)
+app.get('/promo-codes/:id/usage', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  db.query('SELECT code FROM promo_codes WHERE id = ?', [id], (err, promo) => {
+    if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+    if (!promo || promo.length === 0) return res.status(404).json({ error: 'Промокод не найден' });
+    const code = promo[0].code;
+    db.query(
+      `SELECT id, total, status, order_details, delivery_details, created_at, promo_code
+       FROM orders WHERE promo_code = ? ORDER BY created_at DESC`,
+      [code],
+      (err, orders) => {
+        if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+        const list = (orders || []).map((o) => {
+          const details = typeof o.order_details === 'string' ? JSON.parse(o.order_details || '{}') : (o.order_details || {});
+          const delivery = typeof o.delivery_details === 'string' ? JSON.parse(o.delivery_details || '{}') : (o.delivery_details || {});
+          return {
+            orderId: o.id,
+            total: o.total,
+            status: o.status,
+            phone: details.phone || delivery.phone || '—',
+            name: details.name || delivery.name || '—',
+            address: delivery.address || '—',
+            createdAt: o.created_at,
+          };
+        });
+        res.json({ code, usageCount: list.length, orders: list });
+      }
+    );
+  });
+});
+
 app.post('/promo-codes', authenticateToken, (req, res) => {
   const { code, discountPercent, expiresAt, isActive } = req.body;
   if (!code || !discountPercent) return res.status(400).json({ error: 'Код и процент скидки обязательны' });
@@ -4486,7 +4527,7 @@ async function handleTelegramOrder(chatId, text, from) {
 
 📦 Номер заказа: #${orderId}
 🏪 Филиал: ${branchName}
-💰 Сумма: ${total.toFixed(2)} сом
+💰 Сумма: ${fmt(total)} сом
 📞 Телефон: ${orderData.phone}
 ${orderData.address ? `📍 Адрес: ${orderData.address}` : ''}
 
@@ -4506,8 +4547,8 @@ ${orderData.address ? `📍 Адрес: ${orderData.address}` : ''}
 📍 Адрес: ${orderData.address || 'Не указан'}
 💬 Комментарий: ${orderData.comments || text.substring(0, 200)}
 🛒 *Товары:*
-${cartItems.map(item => `- ${item.name} (${item.quantity || 1} шт. по ${item.originalPrice || item.price || 0} сом)`).join('\n')}
-💰 *Итоговая сумма: ${total.toFixed(2)} сом*
+${cartItems.map(item => `- ${item.name} (${item.quantity || 1} шт. по ${item.originalPrice ?? item.price ?? 0} сом)`).join('\n')}
+💰 *Итоговая сумма: ${fmt(total)} сом*
 📱 Заказ через Telegram от @${from.username || from.first_name || 'пользователя'}
               `;
               
