@@ -22,7 +22,27 @@ try {
 
 const app = express();
 
-app.use(cors());
+// CORS: разрешаем фронт (boodaipizza.com) и бэкенд (vasya010-red-252b.twc1.net)
+const allowedOrigins = [
+  'https://boodaipizza.com',
+  'https://www.boodaipizza.com',
+  'https://vasya010-red-252b.twc1.net',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:3000',
+];
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(null, false);
+  },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+  credentials: true,
+  optionsSuccessStatus: 200,
+}));
 app.use(express.json());
 
 // Middleware для логирования всех запросов (после парсинга body)
