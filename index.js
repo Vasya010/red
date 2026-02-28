@@ -813,17 +813,6 @@ function initializeServer(callback) {
               } else {
                 checkAllDone();
               }
-              if (!columns.includes('size_small')) {
-                connection.query('ALTER TABLE products ADD COLUMN size_small INT DEFAULT NULL', (err) => {
-                  if (err) {
-                    connection.release();
-                    return callback(err);
-                  }
-                  checkSizeAlterations();
-                });
-              } else {
-                checkSizeAlterations();
-              }
               if (!columns.includes('size_medium')) {
                 connection.query('ALTER TABLE products ADD COLUMN size_medium INT DEFAULT NULL', (err) => {
                   if (err) {
