@@ -254,6 +254,37 @@ const upload = multer({
   }
 }).single('image');
 
+const uploadBannerMedia = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 30 * 1024 * 1024, // 30MB for gif/video banners
+    files: 1,
+    fields: 50
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedMimes = [
+      'image/jpeg',
+      'image/jpg',
+      'image/png',
+      'image/gif',
+      'image/webp',
+      'video/mp4',
+      'video/webm',
+      'video/quicktime'
+    ];
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Неподдерживаемый тип файла. Разрешены: JPG, PNG, GIF, WEBP, MP4, WEBM, MOV'));
+    }
+  }
+}).single('image');
+
+function detectMediaTypeByKey(filePathOrKey) {
+  const value = (filePathOrKey || '').toLowerCase();
+  return /\.(mp4|webm|mov|m4v)(\?|$)/.test(value) ? 'video' : 'image';
+}
+
 // Оптимизация изображения перед загрузкой
 async function optimizeImage(buffer, mimetype) {
   if (!sharp) {
@@ -484,6 +515,23 @@ function optionalAuthenticateToken(req, res, next) {
   }
 }
 
+function isDeveloperEmail(email) {
+  const envEmails = (process.env.DEV_ADMIN_EMAILS || '')
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+  const fallback = ['admin@ameranpizza.com'];
+  const allowed = new Set([...envEmails, ...fallback]);
+  return allowed.has(String(email || '').toLowerCase());
+}
+
+function requireDeveloper(req, res, next) {
+  if (!req.user?.email || !isDeveloperEmail(req.user.email)) {
+    return res.status(403).json({ error: 'Доступ только для разработчика' });
+  }
+  next();
+}
+
 // Вспомогательная функция для конвертации stream в buffer
 function streamToBuffer(stream) {
   return new Promise((resolve, reject) => {
@@ -559,8 +607,10 @@ app.get('/product-image/:key', optionalAuthenticateToken, (req, res) => {
         return res.status(304).end();
       }
       
-      // Оптимизация на лету, если запрошены параметры и установлен sharp
-      if (sharp && (width || quality)) {
+      const isImageContent = contentType.startsWith('image/');
+
+      // Оптимизация на лету только для изображений
+      if (sharp && isImageContent && (width || quality)) {
         const imageProcessor = sharp(imageBuffer);
         
         if (width) {
@@ -606,9 +656,25 @@ app.get('/product-image/:key', optionalAuthenticateToken, (req, res) => {
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // Кэш на 1 год
       res.setHeader('ETag', etag);
       res.setHeader('Last-Modified', new Date().toUTCString());
-      res.setHeader('Content-Length', imageBuffer.length);
       res.setHeader('Accept-Ranges', 'bytes');
-      
+
+      // Для видео поддерживаем partial content (Range requests)
+      if (contentType.startsWith('video/') && req.headers.range) {
+        const range = req.headers.range;
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : imageBuffer.length - 1;
+        const safeStart = Number.isNaN(start) ? 0 : start;
+        const safeEnd = Number.isNaN(end) ? imageBuffer.length - 1 : Math.min(end, imageBuffer.length - 1);
+        const chunk = imageBuffer.subarray(safeStart, safeEnd + 1);
+
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${safeStart}-${safeEnd}/${imageBuffer.length}`);
+        res.setHeader('Content-Length', chunk.length);
+        return res.send(chunk);
+      }
+
+      res.setHeader('Content-Length', imageBuffer.length);
       res.send(imageBuffer);
     } catch (error) {
       console.error('❌ Ошибка обработки изображения:', error);
@@ -1765,7 +1831,8 @@ app.get('/api/public/banners', (req, res) => {
     if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
     const bannersWithUrls = banners.map(banner => ({
       ...banner,
-      image: `https://vasya010-red-bdf5.twc1.net/product-image/${banner.image.split('/').pop()}`
+      image: `https://vasya010-red-bdf5.twc1.net/product-image/${banner.image.split('/').pop()}`,
+      media_type: detectMediaTypeByKey(banner.image)
     }));
     res.json(bannersWithUrls);
   });
@@ -3676,6 +3743,23 @@ app.post('/admin/login', (req, res) => {
   });
 });
 
+app.get('/admin/dev/health', authenticateToken, requireDeveloper, (req, res) => {
+  const uptimeSec = process.uptime();
+  const memoryMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+  const hours = Math.floor(uptimeSec / 3600);
+  const minutes = Math.floor((uptimeSec % 3600) / 60);
+
+  res.json({
+    ok: true,
+    env: process.env.NODE_ENV || 'production',
+    uptime_seconds: Math.round(uptimeSec),
+    uptime_human: `${hours}h ${minutes}m`,
+    memory_mb: `${memoryMb} MB`,
+    image_cache_items: imageCache.size,
+    timestamp: new Date().toISOString()
+  });
+});
+
 app.get('/branches', authenticateToken, (req, res) => {
   db.query('SELECT * FROM branches', (err, branches) => {
     if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
@@ -3771,7 +3855,8 @@ app.get('/banners', authenticateToken, (req, res) => {
     if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
     const bannersWithUrls = banners.map(banner => ({
       ...banner,
-      image: `https://nukesul-brepb-651f.twc1.net/product-image/${banner.image.split('/').pop()}`
+      image: `https://nukesul-brepb-651f.twc1.net/product-image/${banner.image.split('/').pop()}`,
+      media_type: detectMediaTypeByKey(banner.image)
     }));
     res.json(bannersWithUrls);
   });
@@ -5120,7 +5205,7 @@ app.delete('/discounts/:id', authenticateToken, (req, res) => {
 });
 
 app.post('/banners', authenticateToken, (req, res) => {
-  upload(req, res, (err) => {
+  uploadBannerMedia(req, res, (err) => {
     if (err) {
       return handleUploadError(err, req, res, () => {});
     }
@@ -5156,7 +5241,8 @@ app.post('/banners', authenticateToken, (req, res) => {
                 if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
                 res.status(201).json({
                   ...newBanner[0],
-                  image: `https://nukesul-brepb-651f.twc1.net/product-image/${newBanner[0].image.split('/').pop()}`
+                  image: `https://nukesul-brepb-651f.twc1.net/product-image/${newBanner[0].image.split('/').pop()}`,
+                  media_type: detectMediaTypeByKey(newBanner[0].image)
                 });
               }
             );
@@ -5168,7 +5254,7 @@ app.post('/banners', authenticateToken, (req, res) => {
 });
 
 app.put('/banners/:id', authenticateToken, (req, res) => {
-  upload(req, res, (err) => {
+  uploadBannerMedia(req, res, (err) => {
     if (err) {
       return handleUploadError(err, req, res, () => {});
     }
@@ -5218,7 +5304,8 @@ app.put('/banners/:id', authenticateToken, (req, res) => {
                   if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
                   res.json({
                     ...updatedBanner[0],
-                    image: `https://nukesul-brepb-651f.twc1.net/product-image/${updatedBanner[0].image.split('/').pop()}`
+                    image: `https://nukesul-brepb-651f.twc1.net/product-image/${updatedBanner[0].image.split('/').pop()}`,
+                    media_type: detectMediaTypeByKey(updatedBanner[0].image)
                   });
                 }
               );
