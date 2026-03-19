@@ -546,6 +546,129 @@ function streamToBuffer(stream) {
 const imageCache = new Map();
 const MAX_CACHE_SIZE = 100; // Максимум 100 изображений в кэше
 const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 часа
+const runtimeSettingsCache = {
+  value: null,
+  expiresAt: 0
+};
+
+const DEFAULT_RUNTIME_SETTINGS = {
+  maintenance_mode: false,
+  force_404_mode: false,
+  dev_feature_menu_v2: true,
+  dev_feature_story_banners: true,
+  developer_message: ''
+};
+
+function normalizeSettingValue(rawValue, fallbackValue) {
+  if (rawValue === null || rawValue === undefined) return fallbackValue;
+  if (typeof fallbackValue === 'boolean') {
+    if (rawValue === true || rawValue === false) return rawValue;
+    return String(rawValue).toLowerCase() === 'true';
+  }
+  if (typeof fallbackValue === 'number') {
+    const n = Number(rawValue);
+    return Number.isNaN(n) ? fallbackValue : n;
+  }
+  return String(rawValue);
+}
+
+function ensureRuntimeSettingsTable() {
+  return new Promise((resolve, reject) => {
+    db.query(
+      `CREATE TABLE IF NOT EXISTS runtime_settings (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        setting_key VARCHAR(120) NOT NULL UNIQUE,
+        setting_value TEXT,
+        updated_by VARCHAR(255) DEFAULT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )`,
+      (err) => {
+        if (err) return reject(err);
+        resolve();
+      }
+    );
+  });
+}
+
+function getRuntimeSettings(forceRefresh = false) {
+  return new Promise((resolve, reject) => {
+    if (!forceRefresh && runtimeSettingsCache.value && Date.now() < runtimeSettingsCache.expiresAt) {
+      return resolve(runtimeSettingsCache.value);
+    }
+
+    db.query('SELECT setting_key, setting_value FROM runtime_settings', (err, rows) => {
+      if (err) return reject(err);
+      const merged = { ...DEFAULT_RUNTIME_SETTINGS };
+      (rows || []).forEach((row) => {
+        if (Object.prototype.hasOwnProperty.call(DEFAULT_RUNTIME_SETTINGS, row.setting_key)) {
+          merged[row.setting_key] = normalizeSettingValue(row.setting_value, DEFAULT_RUNTIME_SETTINGS[row.setting_key]);
+        } else {
+          merged[row.setting_key] = row.setting_value;
+        }
+      });
+
+      runtimeSettingsCache.value = merged;
+      runtimeSettingsCache.expiresAt = Date.now() + 5000; // short cache
+      resolve(merged);
+    });
+  });
+}
+
+function setRuntimeSettingsBulk(settingsPatch, userEmail = null) {
+  return new Promise((resolve, reject) => {
+    const entries = Object.entries(settingsPatch || {}).filter(([key]) => key);
+    if (entries.length === 0) return resolve();
+
+    let completed = 0;
+    let failed = false;
+    entries.forEach(([key, value]) => {
+      db.query(
+        `INSERT INTO runtime_settings (setting_key, setting_value, updated_by)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`,
+        [key, String(value), userEmail],
+        (err) => {
+          if (failed) return;
+          if (err) {
+            failed = true;
+            return reject(err);
+          }
+          completed += 1;
+          if (completed === entries.length) {
+            runtimeSettingsCache.value = null;
+            runtimeSettingsCache.expiresAt = 0;
+            resolve();
+          }
+        }
+      );
+    });
+  });
+}
+
+function seedDefaultRuntimeSettings() {
+  return new Promise((resolve, reject) => {
+    const entries = Object.entries(DEFAULT_RUNTIME_SETTINGS);
+    let completed = 0;
+    let failed = false;
+
+    entries.forEach(([key, value]) => {
+      db.query(
+        `INSERT IGNORE INTO runtime_settings (setting_key, setting_value, updated_by)
+         VALUES (?, ?, 'system')`,
+        [key, String(value)],
+        (err) => {
+          if (failed) return;
+          if (err) {
+            failed = true;
+            return reject(err);
+          }
+          completed += 1;
+          if (completed === entries.length) resolve();
+        }
+      );
+    });
+  });
+}
 
 // Функция для очистки старых записей из кэша
 function cleanImageCache() {
@@ -1807,6 +1930,51 @@ app.get('/api/public/branches/:branchId/orders', (req, res) => {
     if (err) return res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
     res.json(orders);
   });
+});
+
+app.get('/api/public/runtime-config', async (req, res) => {
+  try {
+    const settings = await getRuntimeSettings();
+    res.json({
+      maintenance_mode: !!settings.maintenance_mode,
+      force_404_mode: !!settings.force_404_mode,
+      dev_feature_story_banners: !!settings.dev_feature_story_banners,
+      developer_message: settings.developer_message || ''
+    });
+  } catch (error) {
+    res.status(500).json({ error: `Ошибка загрузки runtime config: ${error.message}` });
+  }
+});
+
+app.use('/api/public', async (req, res, next) => {
+  try {
+    // Do not block config/health/auth endpoints
+    if (
+      req.path === '/runtime-config' ||
+      req.path === '/health' ||
+      req.path.startsWith('/auth/')
+    ) {
+      return next();
+    }
+
+    const settings = await getRuntimeSettings();
+    if (settings.force_404_mode) {
+      return res.status(404).json({
+        error: 'Страница не найдена',
+        mode: 'force_404_mode'
+      });
+    }
+    if (settings.maintenance_mode) {
+      return res.status(503).json({
+        error: 'Сайт на техническом обслуживании',
+        mode: 'maintenance_mode',
+        message: settings.developer_message || 'Мы скоро вернемся'
+      });
+    }
+    next();
+  } catch (error) {
+    res.status(500).json({ error: `Ошибка проверки режима сайта: ${error.message}` });
+  }
 });
 
 app.get('/api/public/stories', (req, res) => {
@@ -3758,6 +3926,47 @@ app.get('/admin/dev/health', authenticateToken, requireDeveloper, (req, res) => 
     image_cache_items: imageCache.size,
     timestamp: new Date().toISOString()
   });
+});
+
+app.get('/admin/dev/settings', authenticateToken, requireDeveloper, async (req, res) => {
+  try {
+    const settings = await getRuntimeSettings(true);
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({ error: `Ошибка загрузки настроек: ${error.message}` });
+  }
+});
+
+app.put('/admin/dev/settings', authenticateToken, requireDeveloper, async (req, res) => {
+  try {
+    const patch = req.body || {};
+    const allowedKeys = [
+      'maintenance_mode',
+      'force_404_mode',
+      'dev_feature_menu_v2',
+      'dev_feature_story_banners',
+      'developer_message'
+    ];
+    const safePatch = {};
+    allowedKeys.forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(patch, key)) {
+        safePatch[key] = patch[key];
+      }
+    });
+
+    await setRuntimeSettingsBulk(safePatch, req.user?.email || null);
+    const fresh = await getRuntimeSettings(true);
+    res.json(fresh);
+  } catch (error) {
+    res.status(500).json({ error: `Ошибка сохранения настроек: ${error.message}` });
+  }
+});
+
+app.post('/admin/dev/cache/clear', authenticateToken, requireDeveloper, (req, res) => {
+  imageCache.clear();
+  runtimeSettingsCache.value = null;
+  runtimeSettingsCache.expiresAt = 0;
+  res.json({ success: true, message: 'Кэш очищен' });
 });
 
 app.get('/branches', authenticateToken, (req, res) => {
@@ -6013,6 +6222,14 @@ initializeServer((err) => {
   }
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, async () => {
+    try {
+      await ensureRuntimeSettingsTable();
+      await seedDefaultRuntimeSettings();
+      await getRuntimeSettings(true);
+    } catch (runtimeErr) {
+      console.error('⚠️ Ошибка инициализации runtime_settings:', runtimeErr.message);
+    }
+
     const timestamp = new Date().toISOString();
     console.log(`\n${'='.repeat(60)}`);
     console.log(`🚀 [${timestamp}] Сервер запущен на порту ${PORT}`);
